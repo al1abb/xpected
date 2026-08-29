@@ -125,7 +125,7 @@ def group_by_day(cards: list[dict]) -> list[dict]:
     ]
 
 
-_RESULT_COLOR = {"W": "text-green-600 dark:text-green-400", "D": "text-gray-500", "L": "text-red-600 dark:text-red-400"}
+_RESULT_COLOR = {"W": "bg-green-600", "D": "bg-gray-400", "L": "bg-red-500"}
 
 
 def _team_form(session: Session, team_id: int, *, before: dt.datetime, limit: int = 5) -> list[dict]:
@@ -388,7 +388,16 @@ def accuracy_page(request: Request):
     try:
         result_path = BASE_DIR / "data" / "backtest_results.json"
         result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
-        ctx = _template_context(session, request, result=result)
+
+        by_competition = []
+        if result and not result.get("error"):
+            by_competition = sorted(
+                ({"slug": slug, **metrics} for slug, metrics in result["by_competition"].items()),
+                key=lambda m: m["rps"],
+            )
+
+        ctx = _template_context(session, request, result=result, by_competition=by_competition)
+        ctx["current_slug"] = "accuracy"
         return templates.TemplateResponse(request, "accuracy.html", ctx)
     finally:
         session.close()

@@ -1,18 +1,20 @@
 {% from "_bar.html" import probability_bar, no_prediction_placeholder %}
 {% from "_badge.html" import team_badge, competition_badge %}
-<a href="/match/{{ card.match.id }}" class="block rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 hover:shadow-md transition-shadow">
-  <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-2">
-    <span class="flex items-center gap-1.5">{% if card.competition %}{{ competition_badge(card.competition, 4) }}{% endif %}{{ card.competition_name }}{% if card.round %} · {{ card.round }}{% endif %}</span>
-    <span>{{ card.kickoff_display }}</span>
+<a href="/match/{{ card.match.id }}" class="group block rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:border-indigo-200 dark:hover:border-indigo-900">
+  <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-3">
+    <span class="flex items-center gap-1.5 truncate">{% if card.competition %}{{ competition_badge(card.competition, 4) }}{% endif %}<span class="truncate">{{ card.competition_name }}{% if card.round %} · {{ card.round }}{% endif %}</span></span>
+    <span class="shrink-0 pl-2 font-medium">{{ card.kickoff_display }}</span>
   </div>
-  <div class="flex items-center justify-between mb-2 text-sm font-medium">
+  <div class="flex items-center justify-between mb-3 text-sm font-semibold">
     <span class="flex items-center gap-1.5 truncate pr-2">{{ team_badge(card.home_name, card.home_logo, card.home_color) }}{{ card.home_name }}</span>
     <span class="flex items-center gap-1.5 truncate pl-2">{{ team_badge(card.away_name, card.away_logo, card.away_color) }}{{ card.away_name }}</span>
   </div>
   {% if card.prediction %}
     {{ probability_bar(card.home_name, card.home_color, card.prediction.home_win_prob * 100, card.prediction.draw_prob * 100, card.away_name, card.away_color, card.prediction.away_win_prob * 100) }}
     {% if card.prediction.confidence == "low" %}
-    <div class="mt-1 text-xs text-amber-600 dark:text-amber-400">Low confidence — limited history for one or both teams.</div>
+    <div class="mt-2 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+      <span>⚠</span><span>Low confidence — limited history for one or both teams</span>
+    </div>
     {% endif %}
   {% else %}
     {{ no_prediction_placeholder() }}

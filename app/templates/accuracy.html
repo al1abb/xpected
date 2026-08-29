@@ -1,89 +1,61 @@
 {% extends "base.html" %}
 {% block title %}Accuracy — Match Predictor{% endblock %}
 {% block content %}
-<h1 class="text-xl font-bold mb-1">How accurate is this, really?</h1>
-<p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+<h1 class="text-2xl font-bold tracking-tight mb-1">How accurate is this, really?</h1>
+<p class="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-2xl">
   Walk-forward backtest: for every past match, the model is scored using only data that existed before that match was played — never with hindsight.
   Lower is better for RPS, Brier score, and log-loss; higher is better for accuracy.
-  <a class="underline" href="https://en.wikipedia.org/wiki/Ranked_probability_score" target="_blank" rel="noopener">What's RPS?</a>
+  <a class="underline hover:text-indigo-500" href="https://en.wikipedia.org/wiki/Ranked_probability_score" target="_blank" rel="noopener">What's RPS?</a>
 </p>
 
 {% if not result or result.error %}
-<div class="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 text-sm text-gray-500">
+<div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-gray-500">
   Backtest hasn't been run yet. Run <code class="font-mono">scripts/backtest.py</code>.
 </div>
 {% else %}
-<p class="text-xs text-gray-400 mb-4">Evaluated {{ result.model.n }} matches from {{ result.evaluated_from[:10] }} to {{ result.evaluated_to[:10] }}.</p>
+<p class="text-xs text-gray-400 mb-5">Evaluated {{ result.model.n }} matches from {{ result.evaluated_from[:10] }} to {{ result.evaluated_to[:10] }}.</p>
 
-<div class="overflow-x-auto mb-8">
-  <table class="w-full text-sm border-collapse">
-    <thead>
-      <tr class="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800">
-        <th class="py-2 pr-4">Approach</th>
-        <th class="py-2 pr-4">RPS</th>
-        <th class="py-2 pr-4">Brier</th>
-        <th class="py-2 pr-4">Log-loss</th>
-        <th class="py-2 pr-4">Top-pick accuracy</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr class="border-b border-gray-100 dark:border-gray-800 font-semibold">
-        <td class="py-2 pr-4">This model</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.model.rps) }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.model.brier) }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.model.log_loss) }}</td>
-        <td class="py-2 pr-4">{{ '%.1f'|format(result.model.accuracy * 100) }}%</td>
-      </tr>
-      <tr class="border-b border-gray-100 dark:border-gray-800 text-gray-500 dark:text-gray-400">
-        <td class="py-2 pr-4">Home-advantage only (baseline)</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.home_advantage_baseline.rps) }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.home_advantage_baseline.brier) }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.home_advantage_baseline.log_loss) }}</td>
-        <td class="py-2 pr-4">{{ '%.1f'|format(result.home_advantage_baseline.accuracy * 100) }}%</td>
-      </tr>
-      {% if result.market_baseline.n %}
-      <tr class="text-gray-500 dark:text-gray-400">
-        <td class="py-2 pr-4">Bookmaker closing odds (reference)</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.market_baseline.rps) }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.market_baseline.brier) }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(result.market_baseline.log_loss) }}</td>
-        <td class="py-2 pr-4">{{ '%.1f'|format(result.market_baseline.accuracy * 100) }}%</td>
-      </tr>
-      {% endif %}
-    </tbody>
-  </table>
+<div class="grid sm:grid-cols-3 gap-4 mb-6">
+  <div class="rounded-2xl border-2 border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/30 p-5">
+    <div class="text-xs font-bold uppercase tracking-widest text-indigo-600 dark:text-indigo-400 mb-2">This model</div>
+    <div class="text-3xl font-black tabular-nums">{{ '%.1f'|format(result.model.accuracy * 100) }}%</div>
+    <div class="text-xs text-gray-500 mt-1">top-pick accuracy · RPS {{ '%.3f'|format(result.model.rps) }}</div>
+  </div>
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
+    <div class="text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Home-advantage baseline</div>
+    <div class="text-3xl font-black tabular-nums text-gray-600 dark:text-gray-300">{{ '%.1f'|format(result.home_advantage_baseline.accuracy * 100) }}%</div>
+    <div class="text-xs text-gray-500 mt-1">top-pick accuracy · RPS {{ '%.3f'|format(result.home_advantage_baseline.rps) }}</div>
+  </div>
+  {% if result.market_baseline.n %}
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
+    <div class="text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Bookmaker odds (reference)</div>
+    <div class="text-3xl font-black tabular-nums text-gray-600 dark:text-gray-300">{{ '%.1f'|format(result.market_baseline.accuracy * 100) }}%</div>
+    <div class="text-xs text-gray-500 mt-1">top-pick accuracy · RPS {{ '%.3f'|format(result.market_baseline.rps) }}</div>
+  </div>
+  {% endif %}
 </div>
 
-<p class="text-sm mb-4">
+<p class="text-sm mb-8 flex items-center gap-1.5">
   {% if result.beats_home_advantage_baseline %}
-  ✅ The model beats the naive home-advantage baseline on RPS.
+  <span class="text-green-600">✅</span> The model beats the naive home-advantage baseline on RPS.
   {% else %}
-  ⚠ The model is not currently beating the naive baseline — treat predictions with caution.
+  <span class="text-amber-600">⚠</span> The model is not currently beating the naive baseline — treat predictions with caution.
   {% endif %}
 </p>
 
-<h2 class="text-lg font-bold mb-3">By competition</h2>
-<div class="overflow-x-auto">
-  <table class="w-full text-sm border-collapse">
-    <thead>
-      <tr class="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800">
-        <th class="py-2 pr-4">Competition</th>
-        <th class="py-2 pr-4">Matches</th>
-        <th class="py-2 pr-4">RPS</th>
-        <th class="py-2 pr-4">Accuracy</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for slug, m in result.by_competition.items() %}
-      <tr class="border-b border-gray-100 dark:border-gray-800">
-        <td class="py-2 pr-4"><a class="hover:underline" href="/competition/{{ slug }}">{{ slug }}</a></td>
-        <td class="py-2 pr-4">{{ m.n }}</td>
-        <td class="py-2 pr-4">{{ '%.3f'|format(m.rps) }}</td>
-        <td class="py-2 pr-4">{{ '%.1f'|format(m.accuracy * 100) }}%</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">By competition, best to worst RPS</h2>
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+  {% for m in by_competition %}
+  <a href="/competition/{{ m.slug }}" class="flex items-center gap-4 px-4 py-3 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+    <span class="w-40 shrink-0 truncate font-medium">{{ m.slug|replace('-', ' ')|title }}</span>
+    <span class="flex-1 h-2 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+      <span class="block h-full rounded-full bg-indigo-500" style="width: {{ m.accuracy * 100 }}%;"></span>
+    </span>
+    <span class="w-12 shrink-0 text-right tabular-nums font-semibold">{{ '%.0f'|format(m.accuracy * 100) }}%</span>
+    <span class="w-16 shrink-0 text-right tabular-nums text-gray-400">{{ '%.3f'|format(m.rps) }}</span>
+    <span class="w-14 shrink-0 text-right tabular-nums text-gray-400">{{ m.n }} gm</span>
+  </a>
+  {% endfor %}
 </div>
 {% endif %}
 {% endblock %}

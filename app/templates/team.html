@@ -3,12 +3,14 @@
 {% block title %}{{ team.canonical_name }} — Match Predictor{% endblock %}
 {% block content %}
 <div class="flex items-center gap-3 mb-1">
-  {{ team_badge(team.canonical_name, team.logo_url, team.primary_color, 10) }}
-  <h1 class="text-xl font-bold">{{ team.canonical_name }}</h1>
+  {{ team_badge(team.canonical_name, team.logo_url, team.primary_color, 12) }}
+  <div>
+    <h1 class="text-2xl font-bold tracking-tight">{{ team.canonical_name }}</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400">{{ team.country or "" }} · Elo rating <span class="font-semibold text-gray-700 dark:text-gray-300">{{ '%.0f'|format(elo_rating) }}</span></p>
+  </div>
 </div>
-<p class="text-sm text-gray-500 dark:text-gray-400 mb-6">{{ team.country or "" }} · Elo rating: {{ '%.0f'|format(elo_rating) }}</p>
 
-<h2 class="text-lg font-bold mb-3">Upcoming</h2>
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mt-8 mb-3">Upcoming</h2>
 <div class="grid gap-3 sm:grid-cols-2 mb-8">
   {% for card in upcoming_cards %}
     {% include "_match_card.html" %}
@@ -17,17 +19,17 @@
   {% endfor %}
 </div>
 
-<h2 class="text-lg font-bold mb-3">Recent Results</h2>
-<div class="grid gap-2">
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Recent Results</h2>
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-2">
   {% for f in recent_form %}
-  <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-md border border-gray-200 dark:border-gray-800 px-3 py-2 text-sm hover:shadow-sm">
-    <span class="text-xs text-gray-500 w-24 shrink-0">{{ f.date_display }}</span>
-    <span class="truncate">{{ f.opponent }} {% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span>
-    <span class="font-mono">{{ f.score }}</span>
-    <span class="w-6 text-center font-bold {{ f.color_class }}">{{ f.result_letter }}</span>
+  <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+    <span class="text-xs text-gray-400 w-20 shrink-0">{{ f.date_display }}</span>
+    <span class="truncate text-gray-700 dark:text-gray-300">{{ f.opponent }} <span class="text-gray-400">{% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span></span>
+    <span class="font-mono text-gray-500 px-2">{{ f.score }}</span>
+    <span class="w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-bold text-white {{ f.color_class }}">{{ f.result_letter }}</span>
   </a>
   {% else %}
-  <p class="text-sm text-gray-400">No results yet.</p>
+  <p class="text-sm text-gray-400 px-3 py-2">No results yet.</p>
   {% endfor %}
 </div>
 {% endblock %}
