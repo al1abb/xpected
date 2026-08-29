@@ -1,7 +1,11 @@
 {% extends "base.html" %}
+{% from "_badge.html" import competition_badge %}
 {% block title %}{{ competition.name }} — Match Predictor{% endblock %}
 {% block content %}
-<h1 class="text-xl font-bold mb-1">{{ competition.name }}</h1>
+<div class="flex items-center gap-3 mb-1">
+  {{ competition_badge(competition, 10) }}
+  <h1 class="text-xl font-bold">{{ competition.name }}</h1>
+</div>
 <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">{{ competition.country }}</p>
 
 {% if not days %}

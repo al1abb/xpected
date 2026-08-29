@@ -266,6 +266,62 @@ def test_established_teams_get_normal_confidence_in_cross_league_match(session):
     assert summary["confidence"] == "normal"
 
 
+def test_shots_data_blends_into_established_team_prediction(session):
+    """Shots-on-target should nudge the prediction relative to a goals-only
+    fit when the two signals disagree, proving the blend actually executes
+    rather than silently no-op'ing when shot data is present."""
+    comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    session.add(comp)
+    session.flush()
+    teams = {i: Team(canonical_name=f"Team {i}") for i in range(6)}
+    session.add_all(teams.values())
+    session.flush()
+
+    rng = np.random.default_rng(7)
+    matches = []
+    match_index = 0
+    for i in range(6):
+        for j in range(6):
+            if i == j:
+                continue
+            for _ in range(3):
+                # Team 0 dominates on shots-on-target far more than its actual
+                # goals tally shows (finishing worse than its chances) —
+                # shots-blend should therefore push its predicted lambda up
+                # relative to a goals-only fit.
+                hst = int(rng.poisson(6.0 if i == 0 else 3.0))
+                ast = int(rng.poisson(3.0 if j == 0 else 3.0))
+                match_index += 1
+                matches.append(
+                    Match(
+                        competition_id=comp.id,
+                        utc_kickoff=dt.datetime(2026, 1, 1) - dt.timedelta(hours=match_index),
+                        status="finished",
+                        home_team_id=teams[i].id,
+                        away_team_id=teams[j].id,
+                        home_goals=int(rng.poisson(1.2)),
+                        away_goals=int(rng.poisson(1.2)),
+                        home_shots_on_target=hst,
+                        away_shots_on_target=ast,
+                        source="test",
+                    )
+                )
+    session.add_all(matches)
+    fixture = Match(competition_id=comp.id, utc_kickoff=dt.datetime(2026, 6, 2), status="scheduled", home_team_id=teams[0].id, away_team_id=teams[1].id, source="test")
+    session.add(fixture)
+    session.commit()
+
+    predictor = predict.Predictor(session, as_of=dt.datetime(2026, 6, 2))
+    fit = predictor.dc_fits[comp.id]
+    dc_result = fit.lambdas(teams[0].id, teams[1].id)
+    goals_only_home = dc_result[0]
+
+    blended_home, _ = predictor._blend_in_shots(fixture, *dc_result)
+    assert blended_home != pytest.approx(goals_only_home)
+    assert comp.id in predictor.shots_fits
+    assert comp.id in predictor.conversion_rates
+
+
 def test_predictor_falls_back_to_elo_for_cross_league_match(session):
     comp = Competition(slug="champions-league", name="UCL", country="Europe", type="uefa_cup")
     session.add(comp)

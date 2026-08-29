@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% from "_badge.html" import team_badge %}
 {% block title %}{{ team.canonical_name }} — Match Predictor{% endblock %}
 {% block content %}
 <div class="flex items-center gap-3 mb-1">
-  <span class="inline-block h-4 w-4 rounded-full" style="background-color: {{ team.primary_color }};"></span>
+  {{ team_badge(team.canonical_name, team.logo_url, team.primary_color, 10) }}
   <h1 class="text-xl font-bold">{{ team.canonical_name }}</h1>
 </div>
 <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">{{ team.country or "" }} · Elo rating: {{ '%.0f'|format(elo_rating) }}</p>

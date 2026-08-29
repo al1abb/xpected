@@ -8,14 +8,18 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.badges import competition_logo, country_flag
 from app.colors import resolve_match_colors, team_colors
 from app.config import BASE_DIR, settings
 from app.db import SessionLocal, init_db
 from app.models import Competition, EloRating, IngestLog, Match, ModelRun, Prediction, Team
+from model.backtest import devigged_market_probs
 from model.elo import BASE_RATING, compute_ratings
 
 app = FastAPI(title="Football Match Prediction")
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+templates.env.globals["competition_logo"] = competition_logo
+templates.env.globals["country_flag"] = country_flag
 
 static_dir = BASE_DIR / "app" / "static"
 static_dir.mkdir(parents=True, exist_ok=True)
@@ -95,11 +99,14 @@ def build_match_card(session: Session, match: Match, model_run_id: int | None) -
 
     return {
         "match": match,
+        "competition": competition,
         "competition_name": competition.name if competition else "",
         "round": match.round,
         "kickoff_display": _kickoff_display(match.utc_kickoff),
         "home_name": home.canonical_name,
         "away_name": away.canonical_name,
+        "home_logo": home.logo_url,
+        "away_logo": away.logo_url,
         "home_color": home_color,
         "away_color": away_color,
         "prediction": prediction,
@@ -309,6 +316,11 @@ def match_page(request: Request, match_id: int):
         away_form = _team_form(session, away.id, before=cutoff)
         h2h = _head_to_head(session, home.id, away.id)
 
+        market_probs = devigged_market_probs(match)
+        market = None
+        if market_probs is not None:
+            market = {"home": market_probs[0] * 100, "draw": market_probs[1] * 100, "away": market_probs[2] * 100}
+
         ctx = _template_context(
             session,
             request,
@@ -323,6 +335,7 @@ def match_page(request: Request, match_id: int):
             home_form=home_form,
             away_form=away_form,
             head_to_head=h2h,
+            market=market,
         )
         return templates.TemplateResponse(request, "match.html", ctx)
     finally:

@@ -147,6 +147,11 @@ def parse_fixtures_csv(text: str, fd_codes: set[str]) -> list[dict]:
                 "home_name": row["HomeTeam"].strip(),
                 "away_name": row["AwayTeam"].strip(),
                 "status": "scheduled",
+                # Pre-match average odds — same columns as results, since
+                # fixtures.csv carries live odds for not-yet-played matches too.
+                "odds_home": _float_or_none(row.get("AvgH", "")) or _float_or_none(row.get("B365H", "")),
+                "odds_draw": _float_or_none(row.get("AvgD", "")) or _float_or_none(row.get("B365D", "")),
+                "odds_away": _float_or_none(row.get("AvgA", "")) or _float_or_none(row.get("B365A", "")),
             }
         )
     return rows
@@ -210,16 +215,20 @@ def _upsert_match(session: Session, competition_id: int, row: dict) -> bool:
 
     odds_home, odds_draw, odds_away = row.get("odds_home"), row.get("odds_draw"), row.get("odds_away")
     if odds_home and odds_draw and odds_away:
+        # Results carry true closing odds (AvgC*); fixtures.csv carries live
+        # pre-match odds for not-yet-played matches — label them distinctly
+        # rather than calling both "closing".
+        bookmaker = "closing_avg" if row["status"] == "finished" else "pre_match_avg"
         existing_odds = (
             session.query(OddsSnapshot)
-            .filter_by(match_id=match.id, source=SOURCE, bookmaker="closing_avg")
+            .filter_by(match_id=match.id, source=SOURCE, bookmaker=bookmaker)
             .one_or_none()
         )
         if existing_odds is None:
             session.add(
                 OddsSnapshot(
                     match_id=match.id,
-                    bookmaker="closing_avg",
+                    bookmaker=bookmaker,
                     home_odds=odds_home,
                     draw_odds=odds_draw,
                     away_odds=odds_away,

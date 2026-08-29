@@ -160,6 +160,8 @@ def _parse_fixture(fixture: dict, competition: Competition) -> dict | None:
         "neutral_venue": neutral,
         "home_name": fixture["teams"]["home"]["name"],
         "away_name": fixture["teams"]["away"]["name"],
+        "home_logo": fixture["teams"]["home"].get("logo"),
+        "away_logo": fixture["teams"]["away"].get("logo"),
         "home_goals": fixture["goals"]["home"],
         "away_goals": fixture["goals"]["away"],
         "home_goals_ht": (fixture.get("score", {}).get("halftime") or {}).get("home"),
@@ -172,6 +174,11 @@ def _upsert_fixture(session: Session, competition: Competition, row: dict) -> bo
 
     home_team = get_or_create_team(session, row["home_name"], SOURCE, context=f"competition={competition.slug}")
     away_team = get_or_create_team(session, row["away_name"], SOURCE, context=f"competition={competition.slug}")
+
+    if home_team.logo_url is None and row.get("home_logo"):
+        home_team.logo_url = row["home_logo"]
+    if away_team.logo_url is None and row.get("away_logo"):
+        away_team.logo_url = row["away_logo"]
 
     fields = dict(
         competition_id=competition.id,

@@ -61,7 +61,7 @@ def _home_advantage_baseline(session: Session, cutoff: dt.datetime) -> tuple[flo
     return tuple(c / total for c in counts)
 
 
-def _devigged_market_probs(match: Match) -> tuple[float, float, float] | None:
+def devigged_market_probs(match: Match) -> tuple[float, float, float] | None:
     snapshot = next((o for o in match.odds if o.home_odds and o.draw_odds and o.away_odds), None)
     if snapshot is None:
         return None
@@ -148,7 +148,7 @@ def run_backtest(session: Session, *, burn_in_days: int = 365) -> dict:
             slug = slug_by_competition_id.get(match.competition_id, "unknown")
             model_by_competition.setdefault(slug, Scoreboard()).add(model_probs, actual)
 
-            market_probs = _devigged_market_probs(match)
+            market_probs = devigged_market_probs(match)
             if market_probs is not None:
                 market_overall.add(market_probs, actual)
                 market_matches_scored += 1

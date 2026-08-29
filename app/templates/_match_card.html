@@ -1,12 +1,13 @@
 {% from "_bar.html" import probability_bar, no_prediction_placeholder %}
+{% from "_badge.html" import team_badge, competition_badge %}
 <a href="/match/{{ card.match.id }}" class="block rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 hover:shadow-md transition-shadow">
   <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-2">
-    <span>{{ card.competition_name }}{% if card.round %} · {{ card.round }}{% endif %}</span>
+    <span class="flex items-center gap-1.5">{% if card.competition %}{{ competition_badge(card.competition, 4) }}{% endif %}{{ card.competition_name }}{% if card.round %} · {{ card.round }}{% endif %}</span>
     <span>{{ card.kickoff_display }}</span>
   </div>
   <div class="flex items-center justify-between mb-2 text-sm font-medium">
-    <span class="truncate pr-2">{{ card.home_name }}</span>
-    <span class="truncate pl-2 text-right">{{ card.away_name }}</span>
+    <span class="flex items-center gap-1.5 truncate pr-2">{{ team_badge(card.home_name, card.home_logo, card.home_color) }}{{ card.home_name }}</span>
+    <span class="flex items-center gap-1.5 truncate pl-2">{{ team_badge(card.away_name, card.away_logo, card.away_color) }}{{ card.away_name }}</span>
   </div>
   {% if card.prediction %}
     {{ probability_bar(card.home_name, card.home_color, card.prediction.home_win_prob * 100, card.prediction.draw_prob * 100, card.away_name, card.away_color, card.prediction.away_win_prob * 100) }}

@@ -71,3 +71,18 @@ def test_footballdata_csv_accepts_real_shaped_header():
 
     rows = parse_results_csv("Div,Date,Time,HomeTeam,AwayTeam,FTHG,FTAG\nE0,16/08/2024,20:00,Man United,Fulham,1,0\n")
     assert len(rows) == 1
+
+
+def test_footballdata_csv_fixtures_captures_odds():
+    """Regression: upcoming fixtures carry live pre-match odds in the same
+    file, but parsing used to drop them entirely — meaning the match page's
+    market-odds comparison would only ever show up on already-finished games."""
+    from ingest.footballdata_csv import parse_fixtures_csv
+
+    header = "Div,Date,Time,HomeTeam,AwayTeam,AvgH,AvgD,AvgA"
+    row = "E0,28/08/2026,19:45,Arsenal,Chelsea,2.1,3.4,3.2"
+    rows = parse_fixtures_csv(f"{header}\n{row}\n", {"E0"})
+    assert len(rows) == 1
+    assert rows[0]["odds_home"] == pytest.approx(2.1)
+    assert rows[0]["odds_draw"] == pytest.approx(3.4)
+    assert rows[0]["odds_away"] == pytest.approx(3.2)

@@ -1,0 +1,17 @@
+{% macro team_badge(name, logo_url, color, size=6) %}
+{% if logo_url %}
+<img src="{{ logo_url }}" alt="" class="h-{{ size }} w-{{ size }} shrink-0 object-contain" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+<span class="hidden h-{{ size }} w-{{ size }} shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white" style="background-color: {{ color }};">{{ name[0]|upper }}</span>
+{% else %}
+<span class="flex h-{{ size }} w-{{ size }} shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white" style="background-color: {{ color }};">{{ name[0]|upper }}</span>
+{% endif %}
+{% endmacro %}
+
+{% macro competition_badge(comp, size=6) %}
+{% set logo = competition_logo(comp.slug) %}
+{% if logo %}
+<img src="{{ logo }}" alt="" class="h-{{ size }} w-{{ size }} shrink-0 object-contain">
+{% else %}
+<span class="text-base leading-none">{{ country_flag(comp.country) or "🏆" }}</span>
+{% endif %}
+{% endmacro %}

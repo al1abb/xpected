@@ -160,3 +160,75 @@ def ingest_champions_league(session: Session) -> int:
     )
     session.commit()
     return new_count
+
+
+# football-data.org competition code for every domestic league it covers at
+# TIER_ONE (free), plus Champions League — used only to pull team crests, not
+# match data (Süper Lig and Azerbaijan Premyer Liqa aren't covered here at all).
+CREST_COMPETITION_CODES = {
+    "premier-league": "PL",
+    "la-liga": "PD",
+    "serie-a": "SA",
+    "bundesliga": "BL1",
+    "ligue-1": "FL1",
+    "eredivisie": "DED",
+    "primeira-liga": "PPL",
+    "champions-league": "CL",
+}
+
+
+def sync_team_crests(session: Session) -> int:
+    """One-off/occasional sync — crests essentially never change, so this
+    doesn't need to run on every refresh. Never overwrites a logo_url that's
+    already set (e.g. from API-Football), only fills gaps."""
+    started = dt.datetime.utcnow()
+    if not settings.football_data_org_token:
+        return 0
+
+    updated = 0
+    for slug, code in CREST_COMPETITION_CODES.items():
+        competition = session.query(Competition).filter_by(slug=slug).one_or_none()
+        if competition is None:
+            continue
+
+        url = f"{BASE}/competitions/{code}/teams"
+        try:
+            text = fetch_text(
+                url, subdir="football_data_org", max_age_hours=24 * 30, headers={"X-Auth-Token": settings.football_data_org_token}
+            )
+        except RuntimeError as exc:
+            session.add(
+                IngestLog(
+                    source=SOURCE,
+                    competition_id=competition.id,
+                    started_at=started,
+                    finished_at=dt.datetime.utcnow(),
+                    status="error",
+                    message=f"crest sync: {exc}",
+                )
+            )
+            continue
+
+        data = json.loads(text)
+        for team_data in data.get("teams", []):
+            crest = team_data.get("crest")
+            name = team_data.get("name")
+            if not crest or not name:
+                continue
+            team = get_or_create_team(session, name, SOURCE, context=f"crest sync {slug}")
+            if team.logo_url is None:
+                team.logo_url = crest
+                updated += 1
+
+    session.add(
+        IngestLog(
+            source=SOURCE,
+            started_at=started,
+            finished_at=dt.datetime.utcnow(),
+            status="ok",
+            rows_ingested=updated,
+            message="team crest sync",
+        )
+    )
+    session.commit()
+    return updated
