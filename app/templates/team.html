@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ team.canonical_name }} — Match Predictor{% endblock %}
+{% block content %}
+<div class="flex items-center gap-3 mb-1">
+  <span class="inline-block h-4 w-4 rounded-full" style="background-color: {{ team.primary_color }};"></span>
+  <h1 class="text-xl font-bold">{{ team.canonical_name }}</h1>
+</div>
+<p class="text-sm text-gray-500 dark:text-gray-400 mb-6">{{ team.country or "" }} · Elo rating: {{ '%.0f'|format(elo_rating) }}</p>
+
+<h2 class="text-lg font-bold mb-3">Upcoming</h2>
+<div class="grid gap-3 sm:grid-cols-2 mb-8">
+  {% for card in upcoming_cards %}
+    {% include "_match_card.html" %}
+  {% else %}
+  <p class="text-sm text-gray-400">No upcoming fixtures.</p>
+  {% endfor %}
+</div>
+
+<h2 class="text-lg font-bold mb-3">Recent Results</h2>
+<div class="grid gap-2">
+  {% for f in recent_form %}
+  <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-md border border-gray-200 dark:border-gray-800 px-3 py-2 text-sm hover:shadow-sm">
+    <span class="text-xs text-gray-500 w-24 shrink-0">{{ f.date_display }}</span>
+    <span class="truncate">{{ f.opponent }} {% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span>
+    <span class="font-mono">{{ f.score }}</span>
+    <span class="w-6 text-center font-bold {{ f.color_class }}">{{ f.result_letter }}</span>
+  </a>
+  {% else %}
+  <p class="text-sm text-gray-400">No results yet.</p>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Upcoming Fixtures — Match Predictor{% endblock %}
+{% block content %}
+<h1 class="text-xl font-bold mb-4">Upcoming Fixtures</h1>
+
+{% if not days %}
+<p class="text-gray-500">No upcoming fixtures in the next 7 days.</p>
+{% endif %}
+
+{% for day in days %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">{{ day.label }}</h2>
+  <div class="grid gap-3 sm:grid-cols-2">
+    {% for card in day.cards %}
+      {% include "_match_card.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}
