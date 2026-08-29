@@ -239,7 +239,6 @@ def competition_page(request: Request, slug: str):
             session.query(Match)
             .filter(Match.competition_id == competition.id, Match.status == "scheduled", Match.utc_kickoff >= now)
             .order_by(Match.utc_kickoff)
-            .limit(40)
             .all()
         )
         cards = [build_match_card(session, m, model_run.id if model_run else None) for m in upcoming]

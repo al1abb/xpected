@@ -27,6 +27,14 @@ from model import dixon_coles, elo, league_strength
 MAX_GOALS = 10
 SHRINKAGE_MATCH_THRESHOLD = 10
 LOW_CONFIDENCE_WEIGHT = 0.5
+# For cross-league matches (no shared Dixon-Coles pool — every UEFA fixture,
+# by construction), confidence is judged on *overall* match history across
+# every competition, not on whether a domestic-league fit exists at all —
+# otherwise every single UEFA match gets flagged low regardless of how
+# established either club is, which is true by construction and therefore
+# useless as a signal. Real Madrid vs Inter should not read the same as two
+# sides making their European debut.
+CROSS_LEAGUE_CONFIDENCE_THRESHOLD = 15
 
 MAIN_LEAGUE_COMPETITION_SLUGS = [c["slug"] for c in COMPETITIONS if c["fd_code"]]
 
@@ -77,6 +85,7 @@ class Predictor:
         self.session = session
         self.as_of = as_of or dt.datetime.utcnow()
         self.elo_ratings = elo.compute_ratings(session, as_of=as_of, exclude_match_id=exclude_match_id)
+        self.overall_match_counts = elo.match_count_by_team(session, as_of=as_of)
         self.dc_fits = self._fit_all_leagues(exclude_match_id)
         self.elo_calib = league_strength.fit(session, self.elo_ratings)
 
@@ -111,10 +120,18 @@ class Predictor:
         return float(np.mean(rhos)) if rhos else 0.0
 
     def lambdas_for(self, match: Match) -> tuple[float, float, float, float]:
-        """Returns (lambda_home, lambda_away, rho, blend_weight). blend_weight
-        is 1.0 for a fully-trusted domestic Dixon-Coles fit, 0.0 for a pure
-        Elo-bridge match, and in between for a thin-history team — used both
-        to compute the score matrix and to flag prediction confidence."""
+        """Returns (lambda_home, lambda_away, rho, confidence_weight).
+
+        For a same-league match: confidence_weight is also the Dixon-Coles/
+        Elo blend ratio (1.0 = fully-trusted domestic fit, shrinking toward
+        Elo for thin-history teams).
+
+        For a cross-league match (no shared Dixon-Coles pool — every UEFA
+        fixture): lambdas are always pure Elo-bridge, and confidence_weight
+        instead reflects how much *overall* history each team has across any
+        competition, so an established club's European fixture doesn't get
+        flagged low just because it's cross-league by construction.
+        """
         elo_home = self.elo_ratings.get(match.home_team_id, elo.BASE_RATING)
         elo_away = self.elo_ratings.get(match.away_team_id, elo.BASE_RATING)
         elo_lh, elo_la = self.elo_calib.lambdas(elo_home, elo_away)
@@ -122,7 +139,10 @@ class Predictor:
         fit = self.dc_fits.get(match.competition_id)
         dc_result = fit.lambdas(match.home_team_id, match.away_team_id) if fit else None
         if dc_result is None:
-            return elo_lh, elo_la, self._avg_rho(), 0.0
+            n_home = self.overall_match_counts.get(match.home_team_id, 0)
+            n_away = self.overall_match_counts.get(match.away_team_id, 0)
+            elo_confidence = min(1.0, min(n_home, n_away) / CROSS_LEAGUE_CONFIDENCE_THRESHOLD)
+            return elo_lh, elo_la, self._avg_rho(), elo_confidence
 
         dc_lh, dc_la = dc_result
         n_home = fit.match_counts.get(match.home_team_id, 0)

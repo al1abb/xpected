@@ -225,6 +225,47 @@ def test_predictor_uses_dixon_coles_for_established_domestic_team(session):
     assert weight == 1.0  # plenty of matches for both teams -> full trust in Dixon-Coles
 
 
+def test_established_teams_get_normal_confidence_in_cross_league_match(session):
+    """Regression: every UEFA fixture used to get flagged 'low confidence'
+    purely because it's cross-league, even for two clubs with decades of
+    history — real Champions League backtest showed 144/144 predictions
+    flagged low. An established club's overall history (any competition)
+    should count, not just its (nonexistent) shared domestic-league pool."""
+    league_a = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    league_b = Competition(slug="la-liga", name="La Liga", country="Spain", type="league", fd_code="SP1")
+    ucl = Competition(slug="champions-league", name="UCL", country="Europe", type="uefa_cup")
+    session.add_all([league_a, league_b, ucl])
+    session.flush()
+
+    # Two separate, properly-fittable 6-team domestic leagues (reusing the
+    # same synthetic generator used elsewhere in this file), so each team
+    # arrives with real domestic history but no shared Dixon-Coles pool
+    # between them — the actual UEFA cross-league situation.
+    teams_a = {i: Team(canonical_name=f"League A Team {i}") for i in range(6)}
+    teams_b = {i: Team(canonical_name=f"League B Team {i}") for i in range(6)}
+    session.add_all([*teams_a.values(), *teams_b.values()])
+    session.flush()
+
+    as_of = dt.datetime(2026, 6, 1)
+    for comp, teams in ((league_a, teams_a), (league_b, teams_b)):
+        rows = _synthetic_league_matches(as_of=as_of)
+        session.add_all(
+            [
+                Match(competition_id=comp.id, utc_kickoff=r["utc_kickoff"], status="finished", home_team_id=teams[r["home_team_id"]].id, away_team_id=teams[r["away_team_id"]].id, home_goals=r["home_goals"], away_goals=r["away_goals"], source="test")
+                for r in rows
+            ]
+        )
+    session.commit()
+
+    fixture = Match(competition_id=ucl.id, utc_kickoff=dt.datetime(2026, 6, 2), status="scheduled", home_team_id=teams_a[0].id, away_team_id=teams_b[0].id, source="test")
+    session.add(fixture)
+    session.commit()
+
+    predictor = predict.Predictor(session, as_of=dt.datetime(2026, 6, 2))
+    summary = predictor.predict_match(fixture)
+    assert summary["confidence"] == "normal"
+
+
 def test_predictor_falls_back_to_elo_for_cross_league_match(session):
     comp = Competition(slug="champions-league", name="UCL", country="Europe", type="uefa_cup")
     session.add(comp)
