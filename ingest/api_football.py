@@ -24,9 +24,9 @@ import json
 from sqlalchemy.orm import Session
 
 from app.config import API_FOOTBALL_BASE, settings
-from app.models import ApiBudget, Competition, IngestLog, Match
+from app.models import ApiBudget, Competition, IngestLog, Match, PlayerStat
 from ingest.cache import cache_age_hours, fetch_text, read_cached_text
-from ingest.resolve import get_or_create_team
+from ingest.resolve import build_alias_pool, get_or_create_team, resolve_existing_team
 
 SOURCE = "api_football"
 
@@ -267,3 +267,165 @@ def ingest_competition_season(session: Session, competition_slug: str, af_season
     )
     session.commit()
     return new_count
+
+
+def sync_league_team_crests(session: Session, competition_slug: str, af_season: int) -> int:
+    """One-off crest backfill for a competition whose match data already
+    comes free from football-data.co.uk (so its fixtures are never pulled
+    through here, and `_upsert_fixture`'s logo-backfill-on-any-upsert never
+    gets a chance to run) but whose teams still have no crest source: no
+    football-data.org coverage (Turkish Süper Lig isn't in
+    ingest/football_data_org.py's CREST_COMPETITION_CODES), and
+    football-data.co.uk's CSVs never carry logos at all.
+
+    API-Football's `/teams` endpoint returns a whole league's crests in one
+    request, so this is a single call against the daily budget rather than an
+    ongoing cost — worth it for one league; not worth wiring into every
+    refresh for every competition already covered elsewhere.
+
+    Resolve-only (see ingest/clubelo.py for why): this only attaches a crest
+    to a team we already track from the free source, it never invents one.
+    """
+    competition = session.query(Competition).filter_by(slug=competition_slug).one()
+    started = dt.datetime.utcnow()
+
+    league_id = resolve_league_id(session, competition)
+    if league_id is None:
+        return 0
+
+    try:
+        teams_response = _get(session, "teams", {"league": league_id, "season": af_season}, max_age_hours=24 * 30)
+    except (BudgetExceeded, RuntimeError) as exc:
+        session.add(
+            IngestLog(
+                source=SOURCE,
+                competition_id=competition.id,
+                started_at=started,
+                finished_at=dt.datetime.utcnow(),
+                status="error",
+                message=f"crest sync: {exc}",
+            )
+        )
+        session.commit()
+        return 0
+
+    pool = build_alias_pool(session, exclude_source=SOURCE)
+    updated = 0
+    for entry in teams_response:
+        team_data = entry.get("team") or {}
+        name, crest = team_data.get("name"), team_data.get("logo")
+        if not name or not crest:
+            continue
+        team = resolve_existing_team(session, name, SOURCE, context=f"crest sync {competition_slug}", pool=pool)
+        if team is not None and team.logo_url is None:
+            team.logo_url = crest
+            updated += 1
+
+    session.add(
+        IngestLog(
+            source=SOURCE,
+            competition_id=competition.id,
+            started_at=started,
+            finished_at=dt.datetime.utcnow(),
+            status="ok",
+            rows_ingested=updated,
+            message=f"crest sync season={af_season}",
+        )
+    )
+    session.commit()
+    return updated
+
+
+def _sync_player_stat(
+    session: Session, competition_slug: str, af_season: int, category: str, endpoint: str
+) -> int | None:
+    """Shared implementation for sync_top_scorers/sync_top_assists. Returns
+    None (rather than raising) when the season is blocked/errors out, so the
+    caller (scripts/sync_player_stats.py) can retry an earlier season the
+    same way the Süper Lig crest sync falls back to 2024 — one call per
+    league per category, cheap enough not to need caching finesse beyond the
+    normal week-long disk cache.
+    """
+    competition = session.query(Competition).filter_by(slug=competition_slug).one()
+    started = dt.datetime.utcnow()
+
+    league_id = resolve_league_id(session, competition)
+    if league_id is None:
+        return None
+
+    try:
+        response = _get(session, endpoint, {"league": league_id, "season": af_season}, max_age_hours=24 * 7)
+    except (BudgetExceeded, RuntimeError) as exc:
+        session.add(
+            IngestLog(
+                source=SOURCE,
+                competition_id=competition.id,
+                started_at=started,
+                finished_at=dt.datetime.utcnow(),
+                status="error",
+                message=f"{category} sync season={af_season}: {exc}",
+            )
+        )
+        session.commit()
+        return None
+
+    pool = build_alias_pool(session, exclude_source=SOURCE)
+    season_label = f"{af_season}/{str(af_season + 1)[2:]}"
+
+    # Full replace, not upsert-by-rank: a re-sync should reflect the current
+    # top 10 exactly, including players who've dropped out of it.
+    session.query(PlayerStat).filter_by(competition_id=competition.id, category=category).delete()
+
+    written = 0
+    for entry in response[:10]:
+        player = entry.get("player") or {}
+        stats_list = entry.get("statistics") or []
+        if not stats_list:
+            continue
+        stat = stats_list[0]
+        goals = stat.get("goals") or {}
+        value = goals.get("total") if category == "goals" else goals.get("assists")
+        if value is None:
+            continue
+        team_data = stat.get("team") or {}
+        team = None
+        if team_data.get("name"):
+            team = resolve_existing_team(
+                session, team_data["name"], SOURCE, context=f"{category} sync {competition_slug}", pool=pool
+            )
+        written += 1
+        session.add(
+            PlayerStat(
+                competition_id=competition.id,
+                season_label=season_label,
+                category=category,
+                rank=written,
+                player_name=player.get("name") or "?",
+                team_id=team.id if team else None,
+                value=value,
+                af_player_id=player.get("id"),
+                synced_at=dt.datetime.utcnow(),
+            )
+        )
+
+    session.add(
+        IngestLog(
+            source=SOURCE,
+            competition_id=competition.id,
+            started_at=started,
+            finished_at=dt.datetime.utcnow(),
+            status="ok",
+            rows_ingested=written,
+            message=f"{category} sync season={af_season} ({season_label})",
+        )
+    )
+    session.commit()
+    return written
+
+
+def sync_top_scorers(session: Session, competition_slug: str, af_season: int) -> int | None:
+    return _sync_player_stat(session, competition_slug, af_season, "goals", "players/topscorers")
+
+
+def sync_top_assists(session: Session, competition_slug: str, af_season: int) -> int | None:
+    return _sync_player_stat(session, competition_slug, af_season, "assists", "players/topassists")

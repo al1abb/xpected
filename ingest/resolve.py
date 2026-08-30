@@ -122,6 +122,82 @@ def get_or_create_team(session: Session, raw_name: str, source: str, *, context:
     return team
 
 
+def build_alias_pool(session: Session, exclude_source: str) -> dict[str, Team]:
+    """Public entry point to `_alias_pool`, for callers resolving many names
+    against the same source in one batch (e.g. ClubElo's ~600-row snapshot):
+    build the pool once and pass it to `resolve_existing_team` per row,
+    instead of re-querying and rebuilding it from scratch on every row."""
+    return _alias_pool(session, exclude_source)
+
+
+def resolve_existing_team(
+    session: Session,
+    raw_name: str,
+    source: str,
+    *,
+    context: str = "",
+    pool: dict[str, Team] | None = None,
+) -> Team | None:
+    """Like `get_or_create_team`, but never creates a new `Team`.
+
+    For sources whose own name list is much wider than the clubs we actually
+    track (ClubElo covers 55 countries; football-data.org's crest sync spans
+    every team in a competition, some barely resolvable) — creating a `Team`
+    row for every entry would flood `teams` with clubs we have no match data
+    for at all. Here, no confident match means "skip it", with the same
+    manual-review logging as the create path, rather than "invent a team".
+
+    `pool`: pass a pre-built pool (see `build_alias_pool`) when resolving many
+    names against the same source in one batch, to avoid rebuilding it from
+    every alias in the database on every single call.
+    """
+    raw_name = raw_name.strip()
+    if not raw_name:
+        return None
+
+    existing_alias = session.query(TeamAlias).filter_by(alias=raw_name, source=source).one_or_none()
+    if existing_alias is not None:
+        return existing_alias.team
+
+    norm_target = normalize(raw_name)
+    if pool is None:
+        pool = _alias_pool(session, exclude_source=source)
+
+    if norm_target in pool:
+        team = pool[norm_target]
+        _add_alias(session, team, raw_name, source)
+        return team
+
+    score, best_key = _best_match(norm_target, pool) if pool else (0.0, None)
+
+    if score >= CONFIRM_CUTOFF and best_key is not None:
+        team = pool[best_key]
+        _add_alias(session, team, raw_name, source)
+        return team
+
+    if score >= MAYBE_CUTOFF and best_key is not None and _has_real_overlap(norm_target, best_key):
+        session.add(
+            UnresolvedAlias(
+                raw_name=raw_name,
+                source=source,
+                context=f"{context} | closest existing match: {pool[best_key].canonical_name!r} (similarity {score:.2f})".strip(
+                    " |"
+                ),
+            )
+        )
+        session.flush()
+
+    return None
+
+
+def link_alias(session: Session, team: Team, raw_name: str, source: str) -> None:
+    """Public wrapper for recording a confirmed (raw_name, source) -> team
+    mapping, for callers that already know the correct team from a curated
+    seed file (see ingest/clubelo_aliases.py) and don't need the fuzzy-match
+    path in get_or_create_team / resolve_existing_team."""
+    _add_alias(session, team, raw_name, source)
+
+
 def _add_alias(session: Session, team: Team, raw_name: str, source: str) -> None:
     exists = session.query(TeamAlias).filter_by(alias=raw_name, source=source).one_or_none()
     if exists is None:

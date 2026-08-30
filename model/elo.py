@@ -1,30 +1,56 @@
 """Unified Elo rating, replayed from our own match history across every
-competition. This is the cross-league bridge: a Bundesliga team and an
-Azerbaijani team never share a domestic table, but if they've ever met (or
-each played someone who played someone...) in a UEFA competition, Elo
-propagates a comparable rating through that chain. ClubElo would seed this
-with a richer prior if reachable (see ingest/clubelo.py's documented
-connectivity issue) — absent that, every team starts at BASE_RATING and the
-rating is earned purely from results in our own database, which is enough:
-Elo needs no external prior to be internally consistent.
+competition, then anchored onto ClubElo's globally-comparable scale.
 
-Formula: standard logistic expected-score with a fixed home-advantage offset,
-K scaled by margin of victory (the widely-used World Football Elo ratings
-formula: https://www.eloratings.net/about) so a 4-0 moves ratings more than a
-1-0.
+Why the anchor is necessary, not cosmetic: Elo is zero-sum *within a rating
+pool*. Our leagues are almost entirely closed pools — teams mostly only play
+inside their own domestic league, so wins and losses cancel out and every
+league's internal ratings drift toward the same ~1500 average regardless of
+how strong the league actually is. Only ~1,000 UEFA matches connect the pools
+at all, which is nowhere near enough to correct a ~300 Elo-point gap between,
+say, the Premier League and the Azerbaijan Premyer Liqa. The practical result
+without this fix: teams from weaker leagues (e.g. Porto, at 1780 internally)
+outrank teams from stronger ones (e.g. Manchester City, at 1755) purely
+because they dominate a smaller pond — confirmed against a real UEFA fixture
+during development, where a purely-internal Elo model favoured the weaker
+side by double digits.
+
+ClubElo (see ingest/clubelo.py) rates ~600 clubs across 55 countries on one
+shared scale and is the fix: teams it covers use its rating directly; teams
+it doesn't (thin lower-division and lesser Azerbaijani sides) keep their
+*internally earned* rank ordering but get rescaled onto the ClubElo scale via
+an affine transform fit against teams in the same domestic league that ARE
+covered. This preserves "which of our own teams is better" (real results)
+while fixing "how does that compare across leagues" (ClubElo's job).
+
+Fails soft: if ClubElo is unreachable, `fetch_snapshot` returns {} and every
+team keeps its plain internal rating — today's pre-anchor behaviour — rather
+than the whole prediction pipeline breaking.
+
+Internal replay formula: standard logistic expected-score with a fixed
+home-advantage offset, K scaled by margin of victory (the widely-used World
+Football Elo ratings formula: https://www.eloratings.net/about) so a 4-0
+moves ratings more than a 1-0.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 
+import numpy as np
 from sqlalchemy.orm import Session
 
-from app.models import Match
+from app.models import Competition, Match
+from ingest import clubelo
+from ingest.seasons import current_season_start_year
 
 BASE_RATING = 1500.0
 K_BASE = 20.0
 HOME_ADVANTAGE = 100.0
+
+# Below this many teams paired in both our data and ClubElo for a given
+# domestic league, an affine fit is too noisy to trust — fall back to the
+# global (all-teams, all-leagues) transform instead.
+MIN_PAIRED_FOR_LEAGUE_TRANSFORM = 3
 
 
 def _goal_diff_multiplier(goal_diff: int) -> float:
@@ -39,15 +65,17 @@ def _expected_home_score(elo_home: float, elo_away: float) -> float:
     return 1.0 / (1.0 + 10 ** (((elo_away) - (elo_home + HOME_ADVANTAGE)) / 400))
 
 
-def compute_ratings(
+def _replay_internal(
     session: Session,
     *,
     as_of: dt.datetime | None = None,
     exclude_match_id: int | None = None,
 ) -> dict[int, float]:
     """Replay every finished match up to `as_of` (inclusive) in chronological
-    order and return {team_id: rating}. Teams never seen start implicitly at
-    BASE_RATING when looked up (not present in the returned dict).
+    order and return {team_id: rating}, on our own internal scale (mean drifts
+    toward BASE_RATING per closed pool — see module docstring). Teams never
+    seen start implicitly at BASE_RATING when looked up (not present in the
+    returned dict).
 
     `exclude_match_id` lets the backtest evaluate a match using ratings built
     from everything *except* that match, without a second query round-trip.
@@ -85,9 +113,121 @@ def compute_ratings(
     return ratings
 
 
+def _team_primary_league(session: Session, as_of: dt.datetime | None) -> dict[int, int]:
+    """team_id -> id of the domestic league (Competition.type == 'league') the
+    team has played the most finished matches in, up to `as_of`. Used to pick
+    which league's teams anchor a thin-history team's rescale."""
+    query = session.query(Match).join(Competition, Match.competition_id == Competition.id).filter(
+        Competition.type == "league", Match.status == "finished"
+    )
+    if as_of is not None:
+        query = query.filter(Match.utc_kickoff <= as_of)
+
+    counts: dict[int, dict[int, int]] = {}
+    for m in query.all():
+        for team_id in (m.home_team_id, m.away_team_id):
+            bucket = counts.setdefault(team_id, {})
+            bucket[m.competition_id] = bucket.get(m.competition_id, 0) + 1
+
+    return {team_id: max(comp_counts, key=comp_counts.get) for team_id, comp_counts in counts.items()}
+
+
+def _fit_affine(xs: list[float], ys: list[float]):
+    """Least-squares y = a*x + b. Degenerates to a pure offset if `xs` has no
+    spread (e.g. only one paired team) rather than raising on a singular fit."""
+    xs_arr = np.asarray(xs, dtype=float)
+    ys_arr = np.asarray(ys, dtype=float)
+    if len(xs_arr) < 2 or float(np.std(xs_arr)) < 1e-6:
+        offset = float(np.mean(ys_arr) - np.mean(xs_arr)) if len(xs_arr) else 0.0
+        return lambda x: x + offset
+    design = np.vstack([xs_arr, np.ones_like(xs_arr)]).T
+    (a, b), *_ = np.linalg.lstsq(design, ys_arr, rcond=None)
+    a, b = float(a), float(b)
+    return lambda x: a * x + b
+
+
+def _anchor_to_clubelo(
+    internal: dict[int, float],
+    clubelo_ratings: dict[int, float],
+    team_league: dict[int, int],
+) -> dict[int, float]:
+    if not clubelo_ratings:
+        return dict(internal)
+
+    paired = [(tid, internal[tid], clubelo_ratings[tid]) for tid in internal if tid in clubelo_ratings]
+    if len(paired) < 2:
+        return dict(internal)
+
+    global_transform = _fit_affine([p[1] for p in paired], [p[2] for p in paired])
+
+    by_league: dict[int, list[tuple[float, float]]] = {}
+    for tid, i_val, c_val in paired:
+        league = team_league.get(tid)
+        if league is not None:
+            by_league.setdefault(league, []).append((i_val, c_val))
+
+    league_transforms = {
+        league: _fit_affine([p[0] for p in pts], [p[1] for p in pts])
+        for league, pts in by_league.items()
+        if len(pts) >= MIN_PAIRED_FOR_LEAGUE_TRANSFORM
+    }
+
+    result: dict[int, float] = {}
+    for tid, i_val in internal.items():
+        if tid in clubelo_ratings:
+            result[tid] = clubelo_ratings[tid]
+            continue
+        transform = league_transforms.get(team_league.get(tid), global_transform)
+        result[tid] = transform(i_val)
+    return result
+
+
+def _clubelo_snapshot_date(as_of: dt.datetime | None) -> dt.date:
+    """Live use (`as_of=None`) fetches today's actual ClubElo ranking — one
+    request a day. Historical use (walk-forward backtest, ~monthly cutoffs
+    over many seasons) snaps to that cutoff's season-start date instead: a
+    cross-league scale anchor doesn't need month-level precision, domestic
+    leagues realign every close season anyway (see ingest/seasons.py), and it
+    turns what would be ~1 request per month (~80+ over an 8-season backtest)
+    into ~1 per season (~8). ClubElo's free endpoint has no documented rate
+    limit, but hammering it with dozens of rapid historical-date requests was
+    observed, in practice, to make it silently stop responding (timeouts, not
+    429s) rather than reject cleanly — this keeps total request volume low
+    enough to stay a good citizen of a free, unauthenticated API.
+
+    Still zero lookahead: a season-start snapshot is always dated on or
+    before every cutoff that season resolves to, never after.
+    """
+    if as_of is None:
+        return dt.date.today()
+    season_start_year = current_season_start_year(as_of.date())
+    return dt.date(season_start_year, 7, 1)
+
+
+def compute_ratings(
+    session: Session,
+    *,
+    as_of: dt.datetime | None = None,
+    exclude_match_id: int | None = None,
+) -> dict[int, float]:
+    """{team_id: rating}, anchored onto ClubElo's cross-league-comparable scale
+    where possible (see module docstring). Teams never seen are absent from
+    the dict (callers default to BASE_RATING on lookup)."""
+    internal = _replay_internal(session, as_of=as_of, exclude_match_id=exclude_match_id)
+    if not internal:
+        return internal
+
+    snapshot_date = _clubelo_snapshot_date(as_of)
+    clubelo_ratings = clubelo.fetch_snapshot(session, snapshot_date)
+    if not clubelo_ratings:
+        return internal
+    team_league = _team_primary_league(session, as_of)
+    return _anchor_to_clubelo(internal, clubelo_ratings, team_league)
+
+
 def match_count_by_team(session: Session, *, as_of: dt.datetime | None = None) -> dict[int, int]:
     """How many finished matches each team has played up to `as_of` — used
-    for thin-history shrinkage (see model/league_strength.py)."""
+    for thin-history shrinkage (see model/predict.py)."""
     query = session.query(Match).filter(Match.status == "finished")
     if as_of is not None:
         query = query.filter(Match.utc_kickoff <= as_of)

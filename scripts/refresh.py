@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import BASE_DIR
 from app.db import SessionLocal, init_db
-from ingest.sync import run_api_sync, run_free_sync, run_uefa_current_sync
+from ingest.sync import run_api_sync, run_current_season_fixture_sync, run_free_sync
 from model.predict import generate_predictions
 
 
@@ -46,7 +46,7 @@ def main() -> None:
     init_db()
 
     _step("free sources (football-data.co.uk + ClubElo)", lambda: run_free_sync(seasons_back=1))
-    _step("current-season UEFA fixtures", run_uefa_current_sync)
+    _step("current-season fixtures (fixturedownload, all leagues + UEFA)", run_current_season_fixture_sync)
     _step("API-Football (UEFA competitions + Azerbaijan)", lambda: run_api_sync(seasons_back=1))
 
     session = SessionLocal()

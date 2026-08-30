@@ -18,9 +18,10 @@ import json
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Competition, IngestLog, Match
+from app.models import Competition, IngestLog, Match, Team
 from ingest.cache import fetch_text
-from ingest.resolve import get_or_create_team
+from ingest.football_data_org_aliases import FD_ORG_TO_CANONICAL
+from ingest.resolve import build_alias_pool, get_or_create_team, link_alias, resolve_existing_team
 
 SOURCE = "football_data_org"
 BASE = "https://api.football-data.org/v4"
@@ -177,10 +178,31 @@ CREST_COMPETITION_CODES = {
 }
 
 
+def _resolve_crest_team(session: Session, name: str, *, context: str, pool: dict) -> Team | None:
+    canonical = FD_ORG_TO_CANONICAL.get(name)
+    if canonical is not None:
+        team = session.query(Team).filter_by(canonical_name=canonical).one_or_none()
+        if team is not None:
+            link_alias(session, team, name, SOURCE)
+            return team
+    return resolve_existing_team(session, name, SOURCE, context=context, pool=pool)
+
+
 def sync_team_crests(session: Session) -> int:
     """One-off/occasional sync — crests essentially never change, so this
     doesn't need to run on every refresh. Never overwrites a logo_url that's
-    already set (e.g. from API-Football), only fills gaps."""
+    already set (e.g. from API-Football), only fills gaps.
+
+    Resolve-only, like ingest/clubelo.py: this endpoint returns every team in
+    a competition under its full legal name ("FC Internazionale Milano"), most
+    of which the general fuzzy matcher won't auto-confirm against our shorter
+    canonical names. Using the create path here (`get_or_create_team`) used to
+    mean every one of those became a brand-new duplicate `Team` row holding
+    only a crest — confirmed in practice: ~50 such rows from a single sync.
+    `ingest/football_data_org_aliases.py` hand-verifies the ones the fuzzy
+    matcher can't; anything still unresolved is logged for review, not
+    guessed.
+    """
     started = dt.datetime.utcnow()
     if not settings.football_data_org_token:
         return 0
@@ -210,13 +232,14 @@ def sync_team_crests(session: Session) -> int:
             continue
 
         data = json.loads(text)
+        pool = build_alias_pool(session, exclude_source=SOURCE)
         for team_data in data.get("teams", []):
             crest = team_data.get("crest")
             name = team_data.get("name")
             if not crest or not name:
                 continue
-            team = get_or_create_team(session, name, SOURCE, context=f"crest sync {slug}")
-            if team.logo_url is None:
+            team = _resolve_crest_team(session, name, context=f"crest sync {slug}", pool=pool)
+            if team is not None and team.logo_url is None:
                 team.logo_url = crest
                 updated += 1
 

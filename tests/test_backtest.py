@@ -1,11 +1,25 @@
+import datetime as dt
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from model.backtest import brier, log_loss, rps
+from app.models import Base, Match, ModelRun, Prediction, Team
+from model.backtest import brier, live_tracking_summary, log_loss, rps
+
+
+@pytest.fixture()
+def session():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    yield s
+    s.close()
 
 
 def test_rps_perfect_prediction_is_zero():
@@ -49,3 +63,108 @@ def test_log_loss_handles_zero_probability_without_crashing():
     # A model that assigns literally 0% to the outcome that happened must not
     # raise (math domain error) — it should be heavily penalized instead.
     assert log_loss((1.0, 0.0, 0.0), actual=2) > 10
+
+
+# ---------- live_tracking_summary ----------
+
+
+def _finished_match(comp_id, home_id, away_id, kickoff, home_goals, away_goals):
+    return Match(
+        competition_id=comp_id,
+        utc_kickoff=kickoff,
+        status="finished",
+        home_team_id=home_id,
+        away_team_id=away_id,
+        home_goals=home_goals,
+        away_goals=away_goals,
+        source="test",
+    )
+
+
+def test_live_tracking_ignores_predictions_made_after_kickoff(session):
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    match = _finished_match(1, home.id, away.id, dt.datetime(2026, 1, 10), 2, 0)
+    session.add(match)
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+    # Made AFTER kickoff — hindsight, must not count as a genuine tracked prediction.
+    session.add(
+        Prediction(
+            match_id=match.id, model_run_id=run.id, home_win_prob=0.9, draw_prob=0.05, away_win_prob=0.05,
+            created_at=dt.datetime(2026, 1, 11),
+        )
+    )
+    session.commit()
+
+    assert live_tracking_summary(session) == {"n": 0}
+
+
+def test_live_tracking_uses_latest_pre_kickoff_prediction(session):
+    """A match re-predicted twice before kickoff should be scored once, using
+    the most recent (most representative of what the site actually showed
+    right before the game) — not double-counted."""
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    kickoff = dt.datetime(2026, 1, 10)
+    match = _finished_match(1, home.id, away.id, kickoff, 2, 0)  # home win, actual=0
+    session.add(match)
+    session.flush()
+    # Two separate model runs, as generate_predictions() would produce on two
+    # different refits — each creates its own Prediction for this match.
+    run1, run2 = ModelRun(params={}), ModelRun(params={})
+    session.add_all([run1, run2])
+    session.flush()
+    # Earlier, wrong-leaning prediction...
+    session.add(
+        Prediction(
+            match_id=match.id, model_run_id=run1.id, home_win_prob=0.2, draw_prob=0.3, away_win_prob=0.5,
+            created_at=kickoff - dt.timedelta(days=5),
+        )
+    )
+    # ...superseded by a later, correct-leaning one, still before kickoff.
+    session.add(
+        Prediction(
+            match_id=match.id, model_run_id=run2.id, home_win_prob=0.7, draw_prob=0.2, away_win_prob=0.1,
+            created_at=kickoff - dt.timedelta(days=1),
+        )
+    )
+    session.commit()
+
+    result = live_tracking_summary(session)
+    assert result["n"] == 1
+    assert result["accuracy"] == pytest.approx(1.0)  # scored on the later (correct) prediction only
+
+
+def test_live_tracking_calibration_table_buckets_by_confidence(session):
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+
+    kickoff = dt.datetime(2026, 1, 10)
+    match = _finished_match(1, home.id, away.id, kickoff, 1, 0)  # home win
+    session.add(match)
+    session.flush()
+    session.add(
+        Prediction(
+            match_id=match.id, model_run_id=run.id, home_win_prob=0.75, draw_prob=0.15, away_win_prob=0.10,
+            created_at=kickoff - dt.timedelta(days=1),
+        )
+    )
+    session.commit()
+
+    result = live_tracking_summary(session)
+    assert result["n"] == 1
+    band = result["calibration_table"][0]
+    assert band["band_label"] == "70-80%"
+    assert band["n"] == 1
+    assert band["realized_rate"] == pytest.approx(1.0)
+    assert result["recent"][0]["hit"] is True
+    assert result["recent"][0]["predicted_pick"] == "home"

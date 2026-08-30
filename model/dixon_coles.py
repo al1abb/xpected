@@ -22,12 +22,20 @@ shifting defense by the same amount — mathematically equivalent, much simpler.
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import poisson
 
-XI_PER_DAY = 0.0065 / 3.5  # Dixon & Coles' published per-half-week decay, converted to per-day
+
+# Tuned against our own walk-forward backtest (scripts/tune_accuracy.py) over
+# half-lives of 108d (Dixon & Coles' original 1997 published rate, converted
+# from their per-half-week value), 180d, and 365d. 180d won on RPS across all
+# three (0.2000 vs 0.2009 and 0.2001), though the margin is small — this
+# model turns out not to be very sensitive to xi in this range, and the 1997
+# value was already close to optimal for our data.
+XI_PER_DAY = math.log(2) / 180
 
 
 class LeagueFit:
@@ -59,9 +67,14 @@ def tau(home_goals: np.ndarray, away_goals: np.ndarray, lam: np.ndarray, mu: np.
     return np.clip(tau, 1e-6, None)
 
 
-def fit_league(matches: list[dict], as_of: dt.datetime) -> LeagueFit:
+def fit_league(matches: list[dict], as_of: dt.datetime, xi_per_day: float = XI_PER_DAY) -> LeagueFit:
     """matches: dicts with home_team_id, away_team_id, home_goals, away_goals,
-    utc_kickoff (all required, all finished matches only)."""
+    utc_kickoff (all required, all finished matches only).
+
+    `xi_per_day` defaults to Dixon & Coles' published 1997 value, fit on
+    1990s English football, not ours — scripts/tune_decay.py sweeps this
+    against our own walk-forward backtest to find a better one (see the plan
+    for why this is worth doing before adding any new data source)."""
     team_ids = sorted({m["home_team_id"] for m in matches} | {m["away_team_id"] for m in matches})
     idx = {tid: i for i, tid in enumerate(team_ids)}
     n = len(team_ids)
@@ -73,7 +86,7 @@ def fit_league(matches: list[dict], as_of: dt.datetime) -> LeagueFit:
     home_goals = np.array([m["home_goals"] for m in matches], dtype=float)
     away_goals = np.array([m["away_goals"] for m in matches], dtype=float)
     days_ago = np.array([max((as_of - m["utc_kickoff"]).total_seconds() / 86400, 0.0) for m in matches])
-    weights = np.exp(-XI_PER_DAY * days_ago)
+    weights = np.exp(-xi_per_day * days_ago)
 
     x0 = np.concatenate([np.zeros(n), np.zeros(n), [0.25], [-0.05]])
     bounds = [(-3, 3)] * n + [(-3, 3)] * n + [(-2, 2), (-0.4, 0.4)]

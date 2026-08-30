@@ -1,7 +1,14 @@
-"""fixturedownload.com ingest: free, no-key, structured JSON fixture feeds for
-the UEFA club competitions — this is what actually closes the "show upcoming
-UEFA fixtures" gap that API-Football's free tier blocks (season 2025+ walled
-behind a paid plan for these specific competitions).
+"""fixturedownload.com ingest: free, no-key, structured JSON fixture feeds —
+originally added for the UEFA club competitions (closing the "show upcoming
+UEFA fixtures" gap that API-Football's free tier blocks for those), then
+extended to the 8 domestic leagues too, because football-data.co.uk's
+fixtures.csv (ingest/footballdata_csv.py) turned out to be a rolling ~4-day
+window, not a season-long feed — confirmed live by inspecting its cached
+file, which had exactly 4 distinct dates. fixturedownload.com's whole-season
+JSON, by contrast, already covers the full 2026/27 season for every domestic
+league mapped below (verified live for all 8 — team names spot-checked per
+league, e.g. Galatasaray/Fenerbahçe/Beşiktaş confirm `super-lig` is genuinely
+the Turkish league, not a coincidental slug hit).
 
 Verified directly: /feed/json/champions-league-2026 returns real 2026/27
 fixtures including unplayed ones (null scores). Europa League and Conference
@@ -10,7 +17,11 @@ lag seen in openfootball's repo — so a 404 here is treated as "not published
 yet," not an error, and ingest simply retries next refresh. No coverage for
 the Azerbaijan Premyer Liqa exists on this site at all (its one Azerbaijan
 entry is the national team's Nations League fixtures, a different thing
-entirely) — that gap remains genuinely unsolved after checking six sources.
+entirely), and API-Football's free tier blocks its 2026/27 season too
+(confirmed live: "Free plans do not have access to this season, try from
+2022 to 2024") — that one gap remains genuinely unsolved after checking
+every available source; see future-plans.md rather than a silent claim of
+being fixed.
 """
 
 from __future__ import annotations
@@ -27,11 +38,20 @@ from ingest.seasons import current_season_start_year
 
 SOURCE = "fixturedownload"
 
-# our competition slug -> fixturedownload.com's slug (only competitions covered there)
+# our competition slug -> fixturedownload.com's slug (only competitions covered there).
+# Azerbaijan Premyer Liqa deliberately absent — see module docstring.
 FD_SLUGS = {
     "champions-league": "champions-league",
     "europa-league": "europa-league",
     "conference-league": "conference-league",
+    "premier-league": "epl",
+    "la-liga": "la-liga",
+    "serie-a": "serie-a",
+    "bundesliga": "bundesliga",
+    "ligue-1": "ligue-1",
+    "eredivisie": "eredivisie",
+    "primeira-liga": "primeira-liga",
+    "super-lig": "super-lig",
 }
 
 

@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import time
 
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.models import Competition, Match, OddsSnapshot
+from app.models import Competition, Match, OddsSnapshot, Prediction
 from model.predict import Predictor
 
 OUTCOME_HOME, OUTCOME_DRAW, OUTCOME_AWAY = 0, 1, 2
@@ -108,7 +109,102 @@ class Scoreboard:
         }
 
 
-def run_backtest(session: Session, *, burn_in_days: int = 365) -> dict:
+def _latest_pre_kickoff_predictions(session: Session) -> list[tuple[Prediction, Match]]:
+    """The single most recent Prediction for each finished match that was
+    actually made before that match kicked off — genuinely out-of-sample, as
+    opposed to the backtest's historical simulation. A match can accumulate
+    several predictions over time as the model refits and re-predicts every
+    still-scheduled fixture (see model.predict.generate_predictions); only
+    the latest one reflects what the site was actually showing right before
+    kickoff, so earlier ones for the same match are dropped here."""
+    rows = (
+        session.query(Prediction, Match)
+        .join(Match, Prediction.match_id == Match.id)
+        .filter(Match.status == "finished", Prediction.created_at < Match.utc_kickoff)
+        .all()
+    )
+    latest: dict[int, tuple[Prediction, Match]] = {}
+    for pred, match in rows:
+        current = latest.get(match.id)
+        if current is None or pred.created_at > current[0].created_at:
+            latest[match.id] = (pred, match)
+    return list(latest.values())
+
+
+def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
+    """Scores real, already-made predictions against what actually happened —
+    distinct from run_backtest's historical simulation. This is the honest
+    answer to "how is the model doing right now": no walk-forward replay, just
+    every prediction the site genuinely showed before a match, checked
+    against the result once it came in.
+    """
+    pairs = _latest_pre_kickoff_predictions(session)
+    if not pairs:
+        return {"n": 0}
+
+    pairs.sort(key=lambda pm: pm[1].utc_kickoff, reverse=True)
+
+    scoreboard = Scoreboard()
+    # 10-point bands on the top-pick's predicted probability, e.g. matches
+    # where the model said "50-60% confident in its pick" — bucketed to show
+    # whether that confidence is actually earned (see model/backtest.py's
+    # docstring on why calibration, not hit-rate, is the real target).
+    bands: dict[int, dict] = {}
+    recent = []
+
+    for pred, match in pairs:
+        probs = (pred.home_win_prob, pred.draw_prob, pred.away_win_prob)
+        actual = _actual_outcome(match)
+        scoreboard.add(probs, actual)
+
+        top_idx = int(np.argmax(probs))
+        top_prob = probs[top_idx]
+        hit = top_idx == actual
+        band = min(int(top_prob * 10) * 10, 90)
+        bucket = bands.setdefault(band, {"n": 0, "correct": 0, "prob_sum": 0.0})
+        bucket["n"] += 1
+        bucket["correct"] += int(hit)
+        bucket["prob_sum"] += top_prob
+
+        if len(recent) < recent_limit:
+            recent.append(
+                {
+                    "match": match,
+                    "predicted_probs": probs,
+                    "predicted_pick": ["home", "draw", "away"][top_idx],
+                    "actual_outcome": ["home", "draw", "away"][actual],
+                    "hit": hit,
+                }
+            )
+
+    calibration_table = [
+        {
+            "band_label": f"{band}-{band + 10}%",
+            "band": band,
+            "n": b["n"],
+            "predicted_avg": b["prob_sum"] / b["n"],
+            "realized_rate": b["correct"] / b["n"],
+        }
+        for band, b in sorted(bands.items())
+    ]
+
+    return {
+        **scoreboard.summary(),
+        "calibration_table": calibration_table,
+        "recent": recent,
+    }
+
+
+def run_backtest(
+    session: Session,
+    *,
+    burn_in_days: int = 365,
+    xi_per_day: float | None = None,
+    ensemble_weight: float | None = None,
+    rest_adjustment_enabled: bool = True,
+    collect_predictions: bool = False,
+    verbose: bool = False,
+) -> dict:
     all_matches = session.query(Match).filter(Match.status == "finished").order_by(Match.utc_kickoff).all()
     if not all_matches:
         return {"error": "no finished matches to backtest"}
@@ -119,22 +215,40 @@ def run_backtest(session: Session, *, burn_in_days: int = 365) -> dict:
         return {"error": "not enough history for the requested burn-in period"}
 
     boundaries = _month_boundaries(start, end)
+    total_periods = len(boundaries) - 1
 
     model_overall = Scoreboard()
     home_adv_overall = Scoreboard()
     market_overall = Scoreboard()
     model_by_competition: dict[str, Scoreboard] = {}
     market_matches_scored = 0
+    raw_predictions: list[dict] = []
 
     slug_by_competition_id = {c.id: c.slug for c in session.query(Competition).all()}
 
-    for i in range(len(boundaries) - 1):
+    period_started_at = time.monotonic()
+    for i in range(total_periods):
         cutoff, next_cutoff = boundaries[i], boundaries[i + 1]
         period_matches = [m for m in all_matches if cutoff <= m.utc_kickoff < next_cutoff]
         if not period_matches:
             continue
 
-        predictor = Predictor(session, as_of=cutoff)
+        if verbose:
+            elapsed = time.monotonic() - period_started_at
+            running_rps = f"{model_overall.rps_sum / model_overall.n:.4f}" if model_overall.n else "n/a"
+            print(
+                f"  [{i + 1}/{total_periods}] {cutoff.date()} — {len(period_matches)} matches "
+                f"— running RPS {running_rps} ({elapsed:.0f}s elapsed)",
+                flush=True,
+            )
+
+        predictor = Predictor(
+            session,
+            as_of=cutoff,
+            xi_per_day=xi_per_day,
+            ensemble_weight=ensemble_weight,
+            rest_adjustment_enabled=rest_adjustment_enabled,
+        )
         home_adv_probs = _home_advantage_baseline(session, cutoff)
 
         for match in period_matches:
@@ -148,12 +262,15 @@ def run_backtest(session: Session, *, burn_in_days: int = 365) -> dict:
             slug = slug_by_competition_id.get(match.competition_id, "unknown")
             model_by_competition.setdefault(slug, Scoreboard()).add(model_probs, actual)
 
+            if collect_predictions:
+                raw_predictions.append({"probs": model_probs, "actual": actual, "match_id": match.id})
+
             market_probs = devigged_market_probs(match)
             if market_probs is not None:
                 market_overall.add(market_probs, actual)
                 market_matches_scored += 1
 
-    return {
+    result = {
         "evaluated_from": start.isoformat(),
         "evaluated_to": end.isoformat(),
         "model": model_overall.summary(),
@@ -166,3 +283,6 @@ def run_backtest(session: Session, *, burn_in_days: int = 365) -> dict:
             and model_overall.rps_sum / model_overall.n < home_adv_overall.rps_sum / home_adv_overall.n
         ),
     }
+    if collect_predictions:
+        result["raw_predictions"] = raw_predictions
+    return result

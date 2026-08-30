@@ -49,21 +49,24 @@ def run_api_sync(seasons_back: int = 3) -> dict:
         session.close()
 
 
-def run_uefa_current_sync() -> dict:
-    """Current-season UEFA fixtures via the free sources that actually allow it
-    (API-Football's free tier blocks this specific season for these
-    competitions — see ingest/api_football.py and ingest/fixturedownload.py).
+def run_current_season_fixture_sync() -> dict:
+    """Full current-season fixtures (not just the next few days) via
+    fixturedownload.com's whole-season JSON feed — originally just the 3 UEFA
+    competitions, now every competition in `fixturedownload.FD_SLUGS`
+    (the 8 domestic leagues too, since football-data.co.uk's fixtures.csv
+    turned out to only cover a rolling ~4-day window — see
+    ingest/fixturedownload.py's module docstring). Champions League also gets
+    a second, independent source (football-data.org) alongside fixturedownload.
     """
     init_db()
     session = SessionLocal()
     try:
         apply_known_aliases(session)
         summary = {
-            "fixturedownload_champions_league": fixturedownload.ingest_competition(session, "champions-league"),
-            "fixturedownload_europa_league": fixturedownload.ingest_competition(session, "europa-league"),
-            "fixturedownload_conference_league": fixturedownload.ingest_competition(session, "conference-league"),
-            "football_data_org_champions_league": football_data_org.ingest_champions_league(session),
+            f"fixturedownload_{slug}": fixturedownload.ingest_competition(session, slug)
+            for slug in fixturedownload.FD_SLUGS
         }
+        summary["football_data_org_champions_league"] = football_data_org.ingest_champions_league(session)
         return summary
     finally:
         session.close()
