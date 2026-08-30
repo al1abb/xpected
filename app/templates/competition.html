@@ -1,12 +1,30 @@
 {% extends "base.html" %}
-{% from "_badge.html" import competition_badge %}
-{% block title %}{{ competition.name }} — Match Predictor{% endblock %}
+{% from "_badge.html" import competition_badge, team_badge %}
+{% block title %}{{ competition.name }} · Xpected{% endblock %}
 {% block content %}
-<div class="flex items-center gap-3 mb-1">
-  {{ competition_badge(competition, 10) }}
-  <h1 class="text-2xl font-bold tracking-tight">{{ competition.name }}</h1>
+
+<div class="hero-band mb-4 overflow-hidden rounded-2xl px-5 py-4 text-[color:var(--comp-hero-text)] ring-1 ring-[color:var(--comp-hero-ring)]">
+  <div class="flex items-center gap-4">
+    {{ competition_badge(competition, 20) }}
+    <div class="min-w-0">
+      <h1 class="truncate text-2xl font-bold tracking-tight">{{ competition.name }}</h1>
+      <p class="text-sm opacity-80">{{ competition.country }}</p>
+    </div>
+  </div>
 </div>
-<p class="text-sm text-gray-500 dark:text-gray-400 mb-6">{{ competition.country }}</p>
+
+<div role="tablist" class="mb-6 flex gap-1 border-b border-gray-200 dark:border-gray-800">
+  <button type="button" role="tab" id="tab-btn-fixtures" aria-controls="tab-panel-fixtures" aria-selected="true" data-tab="fixtures"
+          class="tab-btn border-b-2 border-[color:var(--comp-accent)] px-3 py-2 text-sm font-semibold text-[color:var(--comp-accent)]">
+    Fixtures
+  </button>
+  <button type="button" role="tab" id="tab-btn-table" aria-controls="tab-panel-table" aria-selected="false" tabindex="-1" data-tab="table"
+          class="tab-btn border-b-2 border-transparent px-3 py-2 text-sm font-semibold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+    Table
+  </button>
+</div>
+
+<div id="tab-panel-fixtures" role="tabpanel" aria-labelledby="tab-btn-fixtures">
 
 {% if not days %}
 <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-gray-500 mb-8">
@@ -18,28 +36,340 @@
 </div>
 {% endif %}
 
-{% for day in days %}
-<section class="mb-8">
-  <h2 class="flex items-center gap-3 text-xs font-bold text-gray-400 dark:text-gray-500 mb-3 uppercase tracking-widest">
+{% if days %}
+<section id="fixtures" class="mb-8">
+  <div class="mb-3 flex items-baseline justify-between gap-3">
+    <h2 class="text-lg font-bold">Fixtures</h2>
+    <span class="text-xs text-[color:var(--comp-muted)]">
+      {{ fixture_count }} upcoming · {{ days|length }} matchday{{ 's' if days|length != 1 }}
+    </span>
+  </div>
+
+  <!-- ============ STICKY MATCHDAY RAIL ============ -->
+  <div id="date-rail"
+       class="sticky z-20 -mx-4 mb-6 border-y border-gray-200 dark:border-gray-800 bg-[color:var(--comp-page)] px-4"
+       style="top: var(--header-h, 6.25rem);">
+    <div class="flex h-[var(--rail-h)] items-center gap-2">
+
+      <div class="relative min-w-0 flex-1">
+        <div id="rail-track"
+             class="no-scrollbar flex snap-x items-stretch gap-1.5 overflow-x-auto scroll-smooth py-1">
+          {% for m in rail_months %}
+            <span class="sticky left-0 z-10 flex shrink-0 items-center bg-[color:var(--comp-page)] pr-1.5 text-[0.65rem] font-bold uppercase tracking-widest text-[color:var(--comp-muted)]">{{ m.short }}</span>
+            {% for day in m.days %}
+            {% set chip_classes = "group relative flex h-10 w-10 shrink-0 snap-start flex-col items-center justify-center rounded-xl border " ~ (
+                 "border-transparent bg-[color:var(--comp-accent)] text-[color:var(--comp-accent-on)] shadow-sm ring-2 ring-offset-2 ring-[color:var(--comp-accent)] ring-offset-[color:var(--comp-page)]"
+                 if day.is_today else
+                 "border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-200 hover:border-[color:var(--comp-accent)]") %}
+            {% if day.anchor %}
+            <a href="#{{ day.anchor }}" data-rail-chip="{{ day.anchor }}"
+               title="{{ day.label }} · {{ day.count }} match{{ 'es' if day.count != 1 }}"
+               class="{{ chip_classes }}">
+              <span class="text-[0.55rem] font-semibold uppercase leading-none tracking-wide
+                           {{ 'opacity-80' if day.is_today else ('text-[color:var(--comp-accent)]' if day.is_weekend else 'text-[color:var(--comp-muted)]') }}">{{ day.weekday }}</span>
+              <span class="mt-0.5 font-mono text-sm font-bold leading-none">{{ day.day_num }}</span>
+              {% if day.count > 2 %}
+              <span class="absolute -bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-current opacity-50"></span>
+              {% endif %}
+            </a>
+            {% else %}
+            <span title="{{ day.label }} · no fixtures" class="{{ chip_classes }}">
+              <span class="text-[0.55rem] font-semibold uppercase leading-none tracking-wide opacity-80">{{ day.weekday }}</span>
+              <span class="mt-0.5 font-mono text-sm font-bold leading-none">{{ day.day_num }}</span>
+            </span>
+            {% endif %}
+            {% endfor %}
+          {% endfor %}
+        </div>
+        <div id="rail-fade-l" aria-hidden="true"
+             class="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-[color:var(--comp-page)] to-transparent opacity-0 transition-opacity"></div>
+        <div id="rail-fade-r" aria-hidden="true"
+             class="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-[color:var(--comp-page)] to-transparent opacity-0 transition-opacity"></div>
+        <button type="button" id="rail-left" aria-label="Scroll matchdays left"
+                class="hidden absolute left-0.5 top-1/2 -translate-y-1/2 z-10 h-6 w-6 inline-flex items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 shadow dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">‹</button>
+        <button type="button" id="rail-right" aria-label="Scroll matchdays right"
+                class="hidden absolute right-0.5 top-1/2 -translate-y-1/2 z-10 h-6 w-6 inline-flex items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 shadow dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">›</button>
+      </div>
+
+      <a href="#{{ days[0].anchor }}"
+         class="shrink-0 rounded-lg border border-[color:var(--comp-accent)] px-2.5 py-1 text-[0.7rem] font-bold uppercase tracking-wide text-[color:var(--comp-accent)] hover:bg-[color:var(--comp-accent-soft)]">
+        {{ 'Today' if days[0].is_today else 'Next' }}
+      </a>
+      <button type="button" id="rail-expand"
+              class="hidden shrink-0 rounded-lg border border-gray-200 px-2.5 py-1 text-[0.7rem] font-semibold text-[color:var(--comp-muted)] hover:text-[color:var(--comp-accent)] dark:border-gray-700 sm:block">
+        Expand all
+      </button>
+    </div>
+  </div>
+
+  <!-- ============ MONTH SECTIONS ============ -->
+  {% for m in months %}
+  <div class="mb-3 mt-8 flex items-center gap-3 first:mt-0">
+    <h3 class="text-sm font-bold uppercase tracking-widest text-[color:var(--comp-muted)]">{{ m.label }}</h3>
+    <span class="h-px flex-1 bg-gray-200 dark:bg-gray-800"></span>
+    <span class="shrink-0 text-xs text-[color:var(--comp-muted)]">{{ m.count }} matches</span>
+  </div>
+
+  {% for day in m.days %}
+  <details id="{{ day.anchor }}" data-day {% if day.open %}open{% endif %}
+           class="group mb-5"
+           style="scroll-margin-top: calc(var(--header-h, 6.25rem) + var(--rail-h) + 0.75rem);">
+    <summary class="sticky z-[5] -mx-1 flex cursor-pointer list-none items-center gap-3 rounded-lg bg-[color:var(--comp-page)] px-1 py-2"
+             style="top: calc(var(--header-h, 6.25rem) + var(--rail-h));">
+      <span class="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-xl border font-mono leading-none
+                   {{ 'border-transparent bg-[color:var(--comp-accent)] text-[color:var(--comp-accent-on)] shadow-sm'
+                      if day.is_today else
+                      'border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-200' }}">
+        <span class="text-[0.55rem] font-semibold uppercase tracking-wide {{ 'opacity-80' if day.is_today else 'text-[color:var(--comp-muted)]' }}">{{ day.weekday }}</span>
+        <span class="mt-0.5 text-sm font-bold">{{ day.day_num }}</span>
+      </span>
+      <span class="min-w-0">
+        <time datetime="{{ day.iso }}" class="block text-sm font-bold tracking-tight">{{ day.label }}</time>
+        <span class="block text-xs text-[color:var(--comp-muted)]">{{ day.count }} match{{ 'es' if day.count != 1 }}</span>
+      </span>
+      <span class="h-px flex-1 bg-gray-200 dark:bg-gray-800"></span>
+      <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+           class="h-4 w-4 shrink-0 text-[color:var(--comp-muted)] transition-transform duration-150 group-open:rotate-180">
+        <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
+      </svg>
+    </summary>
+    <div class="mt-3 grid gap-3 sm:grid-cols-2">
+      {% for card in day.cards %}{% include "_match_card.html" %}{% endfor %}
+    </div>
+  </details>
+  {% endfor %}
+  {% endfor %}
+</section>
+{% endif %}
+
+<h2 class="text-lg font-bold mt-4 mb-3">Recent Results</h2>
+{% if not results_days %}
+<p class="text-sm text-gray-500 dark:text-gray-400">No results yet this season.</p>
+{% endif %}
+{% for day in results_days %}
+<section class="mb-5">
+  <h3 class="flex items-center gap-3 text-xs font-bold text-[color:var(--comp-muted)] mb-2 uppercase tracking-widest">
     {{ day.label }}
     <span class="h-px flex-1 bg-gray-200 dark:bg-gray-800"></span>
-  </h2>
-  <div class="grid gap-3 sm:grid-cols-2">
+  </h3>
+  <div class="grid gap-2">
     {% for card in day.cards %}
-      {% include "_match_card.html" %}
+    <a href="/match/{{ card.match.id }}" class="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-2.5 text-sm hover:border-[color:var(--comp-hover-border)] transition-colors">
+      <span class="truncate">{{ card.home_name }}</span>
+      <span class="font-mono font-bold px-3 text-gray-700 dark:text-gray-200">{{ card.match.home_goals }} - {{ card.match.away_goals }}</span>
+      <span class="truncate text-right">{{ card.away_name }}</span>
+    </a>
     {% endfor %}
   </div>
 </section>
 {% endfor %}
 
-<h2 class="text-lg font-bold mt-4 mb-3">Recent Results</h2>
-<div class="grid gap-2">
-  {% for r in recent_results %}
-  <a href="/match/{{ r.match.id }}" class="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-2.5 text-sm hover:border-indigo-200 dark:hover:border-indigo-900 transition-colors">
-    <span class="truncate">{{ r.home_name }}</span>
-    <span class="font-mono font-bold px-3 text-gray-700 dark:text-gray-200">{{ r.match.home_goals }} - {{ r.match.away_goals }}</span>
-    <span class="truncate text-right">{{ r.away_name }}</span>
-  </a>
-  {% endfor %}
 </div>
+
+<div id="tab-panel-table" role="tabpanel" aria-labelledby="tab-btn-table" class="hidden">
+
+{% if standings %}
+<section class="mb-8">
+  <h2 class="text-lg font-bold mb-3">Standings</h2>
+  <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs font-bold uppercase tracking-wider bg-[color:var(--comp-thead-bg)] text-[color:var(--comp-thead-text)]">
+          <th class="px-3 py-2 text-right">#</th>
+          <th class="px-3 py-2">Team</th>
+          <th class="px-3 py-2 text-right">P</th>
+          <th class="px-3 py-2 text-right">W</th>
+          <th class="px-3 py-2 text-right">D</th>
+          <th class="px-3 py-2 text-right">L</th>
+          <th class="px-3 py-2 text-right">GD</th>
+          <th class="px-3 py-2 text-right">Pts</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+        {% for row in standings %}
+        <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40">
+          <td class="px-3 py-2 text-right text-[color:var(--comp-muted)]">{{ row.position }}</td>
+          <td class="px-3 py-2">
+            <a href="/team/{{ row.team.id }}" class="flex items-center gap-2 truncate hover:text-indigo-600 dark:hover:text-indigo-400">
+              {{ team_badge(row.team.canonical_name, row.team.logo_url, row.team.primary_color, 5) }}
+              <span class="truncate">{{ row.team.canonical_name }}</span>
+            </a>
+          </td>
+          <td class="px-3 py-2 text-right">{{ row.played }}</td>
+          <td class="px-3 py-2 text-right">{{ row.won }}</td>
+          <td class="px-3 py-2 text-right">{{ row.drawn }}</td>
+          <td class="px-3 py-2 text-right">{{ row.lost }}</td>
+          <td class="px-3 py-2 text-right">{{ "+" if row.gd > 0 }}{{ row.gd }}</td>
+          <td class="px-3 py-2 text-right font-bold">{{ row.points }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% elif standings_empty_reason %}
+<section class="mb-8">
+  <h2 class="text-lg font-bold mb-3">Standings</h2>
+  <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-[color:var(--comp-muted)]">
+    {{ standings_empty_reason }}
+  </div>
+</section>
+{% endif %}
+
+{% if stats_stale_reason %}
+<section class="mb-8">
+  <h2 class="text-lg font-bold mb-3">Top Scorers &amp; Assists</h2>
+  <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-[color:var(--comp-muted)]">
+    {{ stats_stale_reason }}
+  </div>
+</section>
+{% elif top_scorers or top_assists %}
+<section class="mb-8 grid gap-6 sm:grid-cols-2">
+  {% if top_scorers %}
+  <div>
+    <h2 class="text-lg font-bold mb-1">Top Scorers</h2>
+    {% if player_stats_is_current %}
+    <p class="text-xs text-[color:var(--comp-muted)] mb-3">{{ player_stats_season }} season</p>
+    {% else %}
+    <p class="text-xs text-amber-600 dark:text-amber-400 mb-3">
+      Showing {{ player_stats_season }} data, the most recent our free source allows. Not the current {{ current_season_label }} season.
+    </p>
+    {% endif %}
+    <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
+      <table class="w-full text-sm">
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+          {% for row in top_scorers %}
+          <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40">
+            <td class="px-3 py-2 text-right text-[color:var(--comp-muted)] w-6">{{ row.rank }}</td>
+            <td class="px-3 py-2">
+              <span class="flex items-center gap-2 truncate">
+                {% if row.team %}{{ team_badge(row.team.canonical_name, row.team.logo_url, row.team.primary_color, 5) }}{% endif %}
+                <span class="truncate">{{ row.player_name }}</span>
+              </span>
+            </td>
+            <td class="px-3 py-2 text-right font-bold font-mono">{{ row.value }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+  {% if top_assists %}
+  <div>
+    <h2 class="text-lg font-bold mb-1">Top Assists</h2>
+    {% if player_stats_is_current %}
+    <p class="text-xs text-[color:var(--comp-muted)] mb-3">{{ player_stats_season }} season</p>
+    {% else %}
+    <p class="text-xs text-amber-600 dark:text-amber-400 mb-3">
+      Showing {{ player_stats_season }} data, the most recent our free source allows. Not the current {{ current_season_label }} season.
+    </p>
+    {% endif %}
+    <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
+      <table class="w-full text-sm">
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+          {% for row in top_assists %}
+          <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40">
+            <td class="px-3 py-2 text-right text-[color:var(--comp-muted)] w-6">{{ row.rank }}</td>
+            <td class="px-3 py-2">
+              <span class="flex items-center gap-2 truncate">
+                {% if row.team %}{{ team_badge(row.team.canonical_name, row.team.logo_url, row.team.primary_color, 5) }}{% endif %}
+                <span class="truncate">{{ row.player_name }}</span>
+              </span>
+            </td>
+            <td class="px-3 py-2 text-right font-bold font-mono">{{ row.value }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if not standings and not standings_empty_reason and not top_scorers and not top_assists and not stats_stale_reason %}
+<p class="text-sm text-gray-500 dark:text-gray-400">Nothing to show here for this competition.</p>
+{% endif %}
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  // ---- tab switcher ----
+  var tabButtons = document.querySelectorAll('.tab-btn');
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      tabButtons.forEach(function (b) {
+        var active = b === btn;
+        b.setAttribute('aria-selected', active ? 'true' : 'false');
+        b.tabIndex = active ? 0 : -1;
+        b.classList.toggle('border-[color:var(--comp-accent)]', active);
+        b.classList.toggle('text-[color:var(--comp-accent)]', active);
+        b.classList.toggle('border-transparent', !active);
+        b.classList.toggle('text-gray-500', !active);
+        b.classList.toggle('dark:text-gray-400', !active);
+        document.getElementById('tab-panel-' + b.dataset.tab).classList.toggle('hidden', !active);
+      });
+    });
+  });
+
+  // ---- date rail enhancements ----
+  var track = document.getElementById('rail-track');
+  if (!track) return;
+
+  wireScrollStrip('rail-track', 'rail-left', 'rail-right', 'rail-fade-l', 'rail-fade-r');
+
+  function openTarget() {
+    if (!location.hash) return;
+    var el = document.querySelector(location.hash);
+    if (el && el.tagName === 'DETAILS') el.open = true;
+  }
+  window.addEventListener('hashchange', openTarget);
+  openTarget();
+
+  var chips = {};
+  track.querySelectorAll('[data-rail-chip]').forEach(function (c) { chips[c.dataset.railChip] = c; });
+  var current = null;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      var chip = chips[e.target.id];
+      if (!chip || chip === current) return;
+      // Distinct from the permanent "today" ring (which some chips carry
+      // from the template) — this uses outline, not box-shadow, so the two
+      // never collide or get wiped by removing the other's classes.
+      if (current) current.classList.remove('outline', 'outline-2', 'outline-offset-2', 'outline-[color:var(--comp-accent)]');
+      chip.classList.add('outline', 'outline-2', 'outline-offset-2', 'outline-[color:var(--comp-accent)]');
+      current = chip;
+      var left = chip.offsetLeft - track.clientWidth / 2 + chip.offsetWidth / 2;
+      track.scrollTo({ left: left, behavior: 'smooth' });
+    });
+  }, { rootMargin: '-35% 0px -60% 0px' });
+  document.querySelectorAll('details[data-day]').forEach(function (d) { io.observe(d); });
+
+  // Auto-open collapsed day sections well before the user actually scrolls
+  // to them (600px look-ahead in both directions) — no manual click ever
+  // needed. Each section stops being observed once opened, since there's
+  // nothing left to do for it.
+  var autoOpen = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      e.target.open = true;
+      autoOpen.unobserve(e.target);
+    });
+  }, { rootMargin: '600px 0px 600px 0px' });
+  document.querySelectorAll('details[data-day]:not([open])').forEach(function (d) { autoOpen.observe(d); });
+
+  var btn = document.getElementById('rail-expand');
+  btn && btn.addEventListener('click', function () {
+    var expand = btn.textContent.trim() === 'Expand all';
+    document.querySelectorAll('details[data-day]').forEach(function (d) { d.open = expand; });
+    btn.textContent = expand ? 'Collapse all' : 'Expand all';
+  });
+})();
+</script>
 {% endblock %}

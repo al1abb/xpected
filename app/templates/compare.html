@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% from "_badge.html" import team_badge %}
+{% from "_bar.html" import probability_bar %}
+{% block title %}Compare teams · Xpected{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold tracking-tight mb-1">Compare teams</h1>
+<p class="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-2xl">
+  Elo rating, recent form and head-to-head history side by side. If these two
+  aren't already scheduled to play, the matchup probabilities below are a
+  quick estimate from Elo ratings only, not the full per-league model used
+  for real upcoming fixtures.
+</p>
+
+<div class="grid gap-4 sm:grid-cols-2 mb-8">
+  {% for slot, team in [('a', team_a), ('b', team_b)] %}
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
+    {% if team %}
+    <div class="flex items-center gap-3">
+      <a href="/team/{{ team.id }}" class="flex items-center gap-3 min-w-0 hover:text-indigo-600 dark:hover:text-indigo-400">
+        {{ team_badge(team.canonical_name, team.logo_url, team.primary_color, 10) }}
+        <span class="min-w-0">
+          <span class="block truncate font-bold">{{ team.canonical_name }}</span>
+          <span class="block text-xs text-gray-500 dark:text-gray-400">{{ team.country or "" }}</span>
+        </span>
+      </a>
+      <a href="/compare?{{ 'b=' ~ team_b.id if slot == 'a' and team_b else ('a=' ~ team_a.id if slot == 'b' and team_a else '') }}"
+         class="ml-auto shrink-0 text-xs font-medium text-gray-400 hover:text-indigo-600 dark:text-gray-500 dark:hover:text-indigo-400">
+        Change
+      </a>
+    </div>
+    {% else %}
+    <div id="compare-picker-{{ slot }}" class="relative">
+      <input type="search" name="q" id="compare-search-{{ slot }}"
+             placeholder="{{ 'Search for team A…' if slot == 'a' else 'Search for team B…' }}"
+             autocomplete="off" spellcheck="false"
+             hx-get="/search/teams"
+             hx-vals='{"slot": "{{ slot }}"{% if slot == "a" and team_b %}, "other": {{ team_b.id }}{% elif slot == "b" and team_a %}, "other": {{ team_a.id }}{% endif %}}'
+             hx-trigger="keyup changed delay:250ms, search"
+             hx-target="#compare-results-{{ slot }}"
+             hx-swap="innerHTML"
+             hx-sync="this:replace"
+             class="w-full rounded-lg border border-gray-200 bg-gray-50 py-2 px-3 text-sm text-gray-900 placeholder:text-gray-500 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[color:var(--comp-accent)] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400">
+      <div id="compare-results-{{ slot }}"
+           class="relative z-20 mt-1.5 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl empty:hidden empty:border-none empty:shadow-none dark:border-gray-700 dark:bg-gray-900"></div>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if comparison %}
+<div class="grid gap-4 sm:grid-cols-2 mb-8">
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5 text-center">
+    <div class="text-xs font-bold uppercase tracking-widest text-gray-400 dark:text-gray-400 mb-1">Elo rating</div>
+    <div class="text-3xl font-black tabular-nums">{{ '%.0f'|format(comparison.elo_a) }}</div>
+  </div>
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5 text-center">
+    <div class="text-xs font-bold uppercase tracking-widest text-gray-400 dark:text-gray-400 mb-1">Elo rating</div>
+    <div class="text-3xl font-black tabular-nums">{{ '%.0f'|format(comparison.elo_b) }}</div>
+  </div>
+</div>
+
+{% if upcoming_match %}
+<a href="/match/{{ upcoming_match.id }}" class="mb-8 flex items-center justify-between rounded-2xl border-2 border-[color:var(--comp-accent)] bg-[color:var(--comp-accent-soft)] px-5 py-4 hover:opacity-90 transition-opacity">
+  <span class="text-sm font-semibold text-[color:var(--comp-accent)]">
+    These two are already scheduled to play on {{ upcoming_match.utc_kickoff.strftime('%d %b %Y') }}. See the full prediction
+  </span>
+  <span class="text-[color:var(--comp-accent)]">&rarr;</span>
+</a>
+{% else %}
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6 mb-8">
+  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-1">Estimated matchup</h2>
+  <p class="text-xs text-gray-400 dark:text-gray-400 mb-4">Elo-based estimate only. Not the same fine-grained model used for a real scheduled fixture.</p>
+  {{ probability_bar(team_a.canonical_name, color_a, comparison.prediction.home_win_prob * 100, comparison.prediction.draw_prob * 100, team_b.canonical_name, color_b, comparison.prediction.away_win_prob * 100) }}
+</div>
+{% endif %}
+
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6 mb-8">
+  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">Head-to-head</h2>
+  {% if comparison.h2h_tally.total %}
+  <div class="flex items-center justify-center gap-6 mb-5 text-center">
+    <div><div class="text-2xl font-black tabular-nums">{{ comparison.h2h_tally.a_wins }}</div><div class="text-xs text-gray-500 dark:text-gray-400">{{ team_a.canonical_name }} wins</div></div>
+    <div><div class="text-2xl font-black tabular-nums">{{ comparison.h2h_tally.draws }}</div><div class="text-xs text-gray-500 dark:text-gray-400">Draws</div></div>
+    <div><div class="text-2xl font-black tabular-nums">{{ comparison.h2h_tally.b_wins }}</div><div class="text-xs text-gray-500 dark:text-gray-400">{{ team_b.canonical_name }} wins</div></div>
+  </div>
+  <div class="grid gap-1">
+    {% for h in comparison.h2h %}
+    <a href="/match/{{ h.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+      <span class="text-xs text-gray-400 dark:text-gray-400 w-20 shrink-0">{{ h.date_display }}</span>
+      <span class="truncate text-gray-700 dark:text-gray-300">{{ h.home_name }}</span>
+      <span class="font-mono font-bold px-3 text-gray-900 dark:text-gray-100">{{ h.match.home_goals }}&ndash;{{ h.match.away_goals }}</span>
+      <span class="truncate text-right text-gray-700 dark:text-gray-300">{{ h.away_name }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-sm text-gray-400">These teams haven't met in our data.</p>
+  {% endif %}
+</div>
+
+<div class="grid gap-4 sm:grid-cols-2">
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
+    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">{{ team_a.canonical_name }} · last 5</h2>
+    <div class="grid gap-2">
+      {% for f in comparison.form_a %}
+      <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+        <span class="truncate text-gray-700 dark:text-gray-300">{{ f.opponent }} <span class="text-gray-400 dark:text-gray-400">{% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span></span>
+        <span class="font-mono text-gray-500 dark:text-gray-400 px-2">{{ f.score }}</span>
+        <span class="w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-bold text-white {{ f.color_class }}">{{ f.result_letter }}</span>
+      </a>
+      {% else %}
+      <p class="text-sm text-gray-400">No recent results.</p>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
+    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">{{ team_b.canonical_name }} · last 5</h2>
+    <div class="grid gap-2">
+      {% for f in comparison.form_b %}
+      <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+        <span class="truncate text-gray-700 dark:text-gray-300">{{ f.opponent }} <span class="text-gray-400 dark:text-gray-400">{% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span></span>
+        <span class="font-mono text-gray-500 dark:text-gray-400 px-2">{{ f.score }}</span>
+        <span class="w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-bold text-white {{ f.color_class }}">{{ f.result_letter }}</span>
+      </a>
+      {% else %}
+      <p class="text-sm text-gray-400">No recent results.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% elif team_a or team_b %}
+<div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-gray-500">
+  Pick a second team above to see the comparison.
+</div>
+{% endif %}
+
+{% block scripts %}
+<script>
+(function () {
+  // Same dismiss/keyboard behavior as the header search, scoped to whichever
+  // picker box(es) are present on this page.
+  ['a', 'b'].forEach(function (slot) {
+    var root = document.getElementById('compare-picker-' + slot);
+    if (!root) return;
+    var input = document.getElementById('compare-search-' + slot);
+    var panel = document.getElementById('compare-results-' + slot);
+    root.addEventListener('keydown', function (e) {
+      var list = Array.prototype.slice.call(panel.querySelectorAll('[data-search-item]'));
+      if (e.key === 'Escape') { panel.innerHTML = ''; input.blur(); return; }
+      if (!list.length) return;
+      var i = list.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') { e.preventDefault(); (list[i + 1] || list[0]).focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); i <= 0 ? input.focus() : list[i - 1].focus(); }
+    });
+  });
+})();
+</script>
+{% endblock %}
+{% endblock %}

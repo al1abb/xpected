@@ -1,9 +1,21 @@
 {% from "_bar.html" import probability_bar, no_prediction_placeholder %}
 {% from "_badge.html" import team_badge, competition_badge %}
-<a href="/match/{{ card.match.id }}" class="group block rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:border-indigo-200 dark:hover:border-indigo-900">
+<a href="/match/{{ card.match.id }}" class="group block rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 transition-[transform,box-shadow] duration-150 ease-out hover:-translate-y-0.5 hover:shadow-lg hover:border-[color:var(--comp-hover-border)]">
   <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-3">
-    <span class="flex items-center gap-1.5 truncate">{% if card.competition %}{{ competition_badge(card.competition, 4) }}{% endif %}<span class="truncate">{{ card.competition_name }}{% if card.round %} · {{ card.round }}{% endif %}</span></span>
+    <span class="flex items-center gap-1.5 truncate">{% if card.competition %}{{ competition_badge(card.competition, 5) }}{% endif %}<span class="truncate">{{ card.competition_name }}{% if card.round %} · {{ card.round }}{% endif %}</span></span>
+    {% if card.match.status == "scheduled" %}
+    <span class="shrink-0 pl-2" data-live-container data-status="scheduled" data-kickoff="{{ card.match.utc_kickoff.isoformat() }}Z">
+      <span data-variant="scheduled" class="font-medium {{ 'hidden' if card.live_state }}">{{ card.kickoff_display }}</span>
+      <span data-variant="live" class="inline-flex items-center gap-1 font-bold uppercase tracking-wide text-red-600 dark:text-red-400 {{ 'hidden' if card.live_state != 'live' }}" title="Estimated from kickoff time: we don't have a real-time score feed">
+        <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live
+      </span>
+      <span data-variant="pending" class="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 {{ 'hidden' if card.live_state != 'pending' }}" title="Kickoff has passed but our source hasn't posted a result yet">
+        <span>⏳</span>Result pending
+      </span>
+    </span>
+    {% else %}
     <span class="shrink-0 pl-2 font-medium">{{ card.kickoff_display }}</span>
+    {% endif %}
   </div>
   <div class="flex items-center justify-between mb-3 text-sm font-semibold">
     <span class="flex items-center gap-1.5 truncate pr-2">{{ team_badge(card.home_name, card.home_logo, card.home_color) }}{{ card.home_name }}</span>
@@ -13,7 +25,7 @@
     {{ probability_bar(card.home_name, card.home_color, card.prediction.home_win_prob * 100, card.prediction.draw_prob * 100, card.away_name, card.away_color, card.prediction.away_win_prob * 100) }}
     {% if card.prediction.confidence == "low" %}
     <div class="mt-2 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
-      <span>⚠</span><span>Low confidence — limited history for one or both teams</span>
+      <span>⚠</span><span>Low confidence: limited history for one or both teams</span>
     </div>
     {% endif %}
   {% else %}

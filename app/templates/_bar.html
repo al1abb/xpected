@@ -1,28 +1,28 @@
 {% macro probability_bar(home_name, home_color, home_pct, draw_pct, away_name, away_color, away_pct) %}
 <div class="w-full">
   <div class="flex h-8 w-full overflow-hidden rounded-full text-xs font-bold text-white shadow-inner ring-1 ring-black/5 dark:ring-white/10">
-    <div class="flex items-center justify-center transition-all duration-500 border-r border-black/10" style="width: {{ home_pct }}%; background-color: {{ home_color }};" title="{{ home_name }} {{ '%.0f'|format(home_pct) }}%">
+    <div class="flex items-center justify-center border-r border-black/10" style="width: {{ home_pct }}%; background-color: {{ home_color }};" title="{{ home_name }} {{ '%.0f'|format(home_pct) }}%">
       {% if home_pct >= 12 %}{{ '%.0f'|format(home_pct) }}%{% endif %}
     </div>
-    <div class="flex items-center justify-center bg-gray-400 dark:bg-gray-600 transition-all duration-500 border-r border-black/10" style="width: {{ draw_pct }}%;" title="Draw {{ '%.0f'|format(draw_pct) }}%">
+    <div class="flex items-center justify-center bg-gray-400 dark:bg-gray-600 border-r border-black/10" style="width: {{ draw_pct }}%;" title="Draw {{ '%.0f'|format(draw_pct) }}%">
       {% if draw_pct >= 12 %}{{ '%.0f'|format(draw_pct) }}%{% endif %}
     </div>
-    <div class="flex items-center justify-center transition-all duration-500" style="width: {{ away_pct }}%; background-color: {{ away_color }};" title="{{ away_name }} {{ '%.0f'|format(away_pct) }}%">
+    <div class="flex items-center justify-center" style="width: {{ away_pct }}%; background-color: {{ away_color }};" title="{{ away_name }} {{ '%.0f'|format(away_pct) }}%">
       {% if away_pct >= 12 %}{{ '%.0f'|format(away_pct) }}%{% endif %}
     </div>
   </div>
   <div class="mt-1.5 flex justify-between text-xs text-gray-600 dark:text-gray-400">
     <span class="flex items-center gap-1 truncate"><span class="inline-block h-2 w-2 rounded-full shrink-0" style="background-color: {{ home_color }};"></span>{{ home_name }} <b class="text-gray-900 dark:text-gray-100">{{ '%.0f'|format(home_pct) }}%</b></span>
-    <span class="shrink-0 px-1 text-gray-400">Draw <b class="text-gray-600 dark:text-gray-300">{{ '%.0f'|format(draw_pct) }}%</b></span>
+    <span class="shrink-0 px-1 text-gray-400 dark:text-gray-400">Draw <b class="text-gray-600 dark:text-gray-300">{{ '%.0f'|format(draw_pct) }}%</b></span>
     <span class="flex items-center gap-1 truncate text-right"><b class="text-gray-900 dark:text-gray-100">{{ '%.0f'|format(away_pct) }}%</b> {{ away_name }}<span class="inline-block h-2 w-2 rounded-full shrink-0" style="background-color: {{ away_color }};"></span></span>
   </div>
 </div>
 {% endmacro %}
 
-{% macro no_prediction_placeholder() %}
+{% macro no_prediction_placeholder(reason='pending') %}
 <div class="w-full">
-  <div class="flex h-8 w-full items-center justify-center rounded-full bg-gray-100 text-xs text-gray-400 dark:bg-gray-800 dark:text-gray-500 ring-1 ring-black/5 dark:ring-white/10">
-    prediction not yet available
+  <div class="flex h-8 w-full items-center justify-center rounded-full bg-gray-100 text-xs text-gray-400 dark:bg-gray-800 dark:text-gray-400 ring-1 ring-black/5 dark:ring-white/10">
+    {% if reason == 'not_tracked' %}no pre-match prediction was tracked for this game{% else %}prediction not yet available{% endif %}
   </div>
 </div>
 {% endmacro %}

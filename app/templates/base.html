@@ -3,43 +3,191 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Football Predictions{% endblock %}</title>
+  <title>{% block title %}Xpected{% endblock %}</title>
+  <link rel="icon" type="image/png" href="/static/images/xpected-favicon.png">
+  <script>
+    // Dark stays the default regardless of OS preference — only an explicit
+    // stored choice switches to light. Runs before first paint to avoid a
+    // flash of the wrong theme.
+    (function () {
+      var theme = localStorage.theme || 'dark';
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
   <script src="https://unpkg.com/htmx.org@2.0.3"></script>
   <style>
-    ::-webkit-scrollbar { height: 6px; }
+    ::-webkit-scrollbar { height: 6px; width: 6px; }
     ::-webkit-scrollbar-thumb { background: rgba(120,120,130,0.35); border-radius: 3px; }
-    .nav-scroll { scrollbar-width: thin; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    summary::-webkit-details-marker { display: none; }
+
+    /* ---- layout metrics ---- */
+    :root { --header-h: 6.25rem; --rail-h: 3.5rem; }
+
+    /* ---- per-competition theme tokens (defaults = today's indigo look) ---- */
+    :root {
+      --comp-page:         #F9FAFB;  /* body + sticky-header washes (was bg-gray-50)  */
+      --comp-accent:       #4F46E5;  /* indigo-600                                     */
+      --comp-accent-on:    #FFFFFF;  /* text drawn ON an accent fill                   */
+      --comp-accent-soft:  #EEF2FF;  /* indigo-50 tint surface                         */
+      --comp-muted:        #6B7280;  /* gray-500                                       */
+      --comp-thead-bg:     #F3F4F6;
+      --comp-thead-text:   #4B5563;
+      --comp-hover-border: #C7D2FE;  /* indigo-200                                     */
+      --comp-hero:         none;
+      --comp-hero-text:    inherit;
+      --comp-hero-ring:    transparent;
+    }
+    .dark {
+      --comp-page:         #030712;  /* gray-950 */
+      --comp-accent:       #818CF8;  /* indigo-400 — indigo-500 fails AA on gray-950 */
+      --comp-accent-on:    #1E1B4B;
+      --comp-accent-soft:  #1E1B4B;
+      --comp-muted:        #9CA3AF;
+      --comp-thead-bg:     #111827;
+      --comp-thead-text:   #9CA3AF;
+      --comp-hover-border: #312E81;
+    }
+    /* ---- Champions League ---- */
+    /* Page wash deliberately more saturated than the first pass — the
+       earlier #EDF1FB/#070E24 tones were too close to the app's default
+       near-white/near-black to actually notice. These still clear WCAG AA
+       for every text token used against them (verified: muted text ≥5.2:1,
+       body text ≥12:1, accent ≥6:1 in both light and dark). */
+    .theme-ucl {
+      --comp-page:         #CBD8F3;
+      --comp-accent:       #1E3A8A;
+      --comp-accent-on:    #FFFFFF;
+      --comp-accent-soft:  #E2E8FA;
+      --comp-muted:        #475569;  /* gray-500 fails AA on the blue wash; slate-600 passes */
+      --comp-thead-bg:     #E2E8FA;
+      --comp-thead-text:   #1E3A8A;
+      --comp-hover-border: #93A7DA;
+      /* Real UEFA Champions League stadium photo (user-provided) behind a
+         dark navy gradient for text legibility — same image + overlay in
+         light and dark mode, since it's a photo, not a synthetic tint. */
+      --comp-hero: linear-gradient(135deg, rgba(6,12,36,.85) 0%, rgba(10,20,53,.68) 45%, rgba(6,12,36,.90) 100%), url('/static/images/uefa-champions-league-ucl.jpg');
+      --comp-hero-text:    #FFFFFF;
+      --comp-hero-ring:    rgba(30,58,138,.35);
+    }
+    .dark .theme-ucl {
+      --comp-page:         #0D1740;
+      --comp-accent:       #6E8CFF;
+      --comp-accent-on:    #061024;  /* dark ink on the light-blue accent: white would fail */
+      --comp-accent-soft:  #122150;
+      --comp-muted:        #A8B8E8;
+      --comp-thead-bg:     #0D1836;
+      --comp-thead-text:   #A8B8E8;
+      --comp-hover-border: #24397E;
+    }
+
+    body { background-color: var(--comp-page); }
+
+    /* Competition hero band: --comp-hero (gradient, optionally + a photo url
+       for UCL) renders on a blurred ::before layer instead of directly on
+       the box, so a busy background photo never competes with the crest/
+       heading/tab text sitting on top of it. Default --comp-hero is `none`,
+       so this is a no-op everywhere except the themed competition(s). */
+    .hero-band { position: relative; isolation: isolate; }
+    .hero-band::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: var(--comp-hero);
+      background-size: cover;
+      background-position: center 35%;
+      z-index: -1;
+    }
+
+    /* ---- theme-switch guard: suppresses every transition for one frame so
+       the toggle is always a single repaint, regardless of what transition
+       classes get added to templates later. ---- */
+    .theme-switching, .theme-switching *, .theme-switching *::before, .theme-switching *::after {
+      transition: none !important; animation: none !important;
+    }
   </style>
 </head>
-<body class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 min-h-screen antialiased">
+<body class="font-sans text-gray-900 dark:text-gray-100 min-h-screen antialiased {{ body_theme_class or '' }}">
   {% from "_badge.html" import competition_badge %}
-  <header class="sticky top-0 z-10 border-b border-gray-200 dark:border-gray-800 bg-white/90 dark:bg-gray-900/90 backdrop-blur">
-    <div class="mx-auto max-w-5xl px-4 pt-3 flex items-center justify-between gap-3">
-      <a href="/" class="flex items-center gap-2 text-lg font-bold tracking-tight">
-        <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white text-sm">⚽</span>
-        Match Predictor
+  {% macro nav_chip(c, current_slug) %}
+  <a href="/competition/{{ c.slug }}" title="{{ c.name }}" aria-label="{{ c.name }}"
+     data-comp-slug="{{ c.slug }}"
+     {% if c.slug == current_slug %}aria-current="page"{% endif %}
+     class="flex shrink-0 snap-start items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium whitespace-nowrap
+            {{ 'border-transparent bg-[color:var(--comp-accent)] text-[color:var(--comp-accent-on)] shadow-sm'
+               if c.slug == current_slug else
+               'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-300 hover:text-indigo-600 dark:hover:text-indigo-400' }}">
+    {{ competition_badge(c, 6) }}<span>{{ competition_short(c.slug, c.name) }}</span>
+  </a>
+  {% endmacro %}
+
+  <header id="site-header"
+          class="sticky top-0 z-30 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+    <!-- ROW 1: chrome -->
+    <div class="mx-auto flex h-14 max-w-5xl items-center gap-2 px-4 sm:gap-3">
+      <a href="/" class="flex shrink-0 items-center">
+        <img src="/static/images/xpected-logo.png" alt="Xpected" class="h-12 w-auto object-contain">
       </a>
-      <a href="/accuracy" class="text-sm font-medium text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 transition-colors {{ 'text-indigo-600 dark:text-indigo-400' if current_slug == 'accuracy' }}">
+
+      {% include "_search.html" %}
+
+      <a href="/compare"
+         class="hidden sm:inline shrink-0 text-sm font-medium transition-colors {{ 'text-[color:var(--comp-accent)]' if current_slug == 'compare' else 'text-gray-600 hover:text-indigo-600 dark:text-gray-300 dark:hover:text-indigo-400' }}">
+        Compare
+      </a>
+
+      <a href="/accuracy"
+         class="shrink-0 text-sm font-medium transition-colors {{ 'text-[color:var(--comp-accent)]' if current_slug == 'accuracy' else 'text-gray-600 hover:text-indigo-600 dark:text-gray-300 dark:hover:text-indigo-400' }}">
         Accuracy
       </a>
+
+      <button type="button" id="theme-toggle" aria-label="Toggle light/dark theme"
+              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-300 hover:text-indigo-600 dark:hover:text-indigo-400">
+        <svg class="h-4 w-4 dark:hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+        </svg>
+        <svg class="hidden h-4 w-4 dark:inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+        </svg>
+      </button>
     </div>
-    <nav class="nav-scroll mt-3 flex gap-1.5 overflow-x-auto px-4 pb-3 max-w-5xl mx-auto">
-      {% for c in nav_uefa %}
-      <a href="/competition/{{ c.slug }}"
-         class="flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors
-                {{ 'border-indigo-600 bg-indigo-600 text-white' if c.slug == current_slug else 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-300 hover:text-indigo-600 dark:hover:text-indigo-400' }}">
-        {{ competition_badge(c, 4) }}{{ c.name }}
-      </a>
-      {% endfor %}
-      <span class="mx-1 my-auto h-4 w-px shrink-0 bg-gray-200 dark:bg-gray-700"></span>
-      {% for c in nav_leagues %}
-      <a href="/competition/{{ c.slug }}"
-         class="flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors
-                {{ 'border-indigo-600 bg-indigo-600 text-white' if c.slug == current_slug else 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-300 hover:text-indigo-600 dark:hover:text-indigo-400' }}">
-        {{ competition_badge(c, 4) }}{{ c.name }}
-      </a>
-      {% endfor %}
+
+    <!-- ROW 2: one-line competition strip -->
+    <nav aria-label="Competitions" class="relative mx-auto max-w-5xl px-4 pb-2">
+      <div class="relative">
+        <div id="comp-strip"
+             class="no-scrollbar flex snap-x items-center gap-1 overflow-x-auto scroll-smooth px-1">
+          {% for c in nav_uefa %}{{ nav_chip(c, current_slug) }}{% endfor %}
+          <span aria-hidden="true" class="mx-1 h-5 w-px shrink-0 bg-gray-200 dark:bg-gray-700"></span>
+          {% for c in nav_leagues %}{{ nav_chip(c, current_slug) }}{% endfor %}
+        </div>
+        <div id="comp-strip-fade-l" aria-hidden="true"
+             class="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-white dark:from-gray-900 to-transparent opacity-0 transition-opacity"></div>
+        <div id="comp-strip-fade-r" aria-hidden="true"
+             class="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white dark:from-gray-900 to-transparent opacity-0 transition-opacity"></div>
+      </div>
+      <button type="button" id="comp-strip-left" aria-label="Scroll competitions left"
+              class="hidden absolute left-2 top-1/2 -translate-y-1/2 z-10 h-6 w-6 inline-flex items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 shadow dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">‹</button>
+      <button type="button" id="comp-strip-right" aria-label="Scroll competitions right"
+              class="hidden absolute right-2 top-1/2 -translate-y-1/2 z-10 h-6 w-6 inline-flex items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 shadow dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">›</button>
     </nav>
   </header>
 
@@ -52,9 +200,139 @@
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="mx-auto max-w-5xl px-4 py-8 text-xs text-gray-400 dark:text-gray-600 border-t border-gray-100 dark:border-gray-900 mt-8">
+  <footer class="mx-auto max-w-5xl px-4 py-8 text-xs text-gray-400 dark:text-gray-400 border-t border-gray-100 dark:border-gray-900 mt-8">
     {% if data_freshness %}<p class="mb-1">Data last refreshed {{ data_freshness }}.</p>{% endif %}
-    <p>Predictions are statistical estimates, not certainties — see <a href="/accuracy" class="underline hover:text-indigo-500">Accuracy</a> for how the model actually performs.</p>
+    <p>Predictions are statistical estimates, not certainties. See <a href="/accuracy" class="underline hover:text-indigo-500">Accuracy</a> for how the model actually performs.</p>
   </footer>
+
+  <script>
+    // Keeps sticky day-headers (competition.html's date-rail) pinned exactly
+    // below this header, whatever its real rendered height is.
+    (function () {
+      function setHeaderHeight() {
+        var header = document.getElementById('site-header');
+        if (header) document.documentElement.style.setProperty('--header-h', header.offsetHeight + 'px');
+      }
+      setHeaderHeight();
+      window.addEventListener('resize', setHeaderHeight);
+    })();
+  </script>
+  <script>
+    // Auto-center the active competition's chip in the horizontal strip.
+    (function () {
+      var strip = document.getElementById('comp-strip');
+      var active = strip && strip.querySelector('[aria-current="page"]');
+      if (!strip || !active) return;
+      strip.scrollLeft = active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+    })();
+  </script>
+  <script>
+    // Shared "this row scrolls" affordance for any horizontal strip: arrow
+    // buttons (only shown when there's actually more to scroll in that
+    // direction) + edge fade hints. Used by the nav competition strip here
+    // and by competition.html's matchday rail. Deliberately a plain global
+    // function (not an IIFE) so both templates' scripts can call it.
+    function wireScrollStrip(trackId, leftBtnId, rightBtnId, fadeLId, fadeRId) {
+      var track = document.getElementById(trackId);
+      if (!track) return;
+      var leftBtn = document.getElementById(leftBtnId);
+      var rightBtn = document.getElementById(rightBtnId);
+      var fadeL = fadeLId && document.getElementById(fadeLId);
+      var fadeR = fadeRId && document.getElementById(fadeRId);
+
+      function update() {
+        var max = track.scrollWidth - track.clientWidth;
+        var scrollable = max > 4;
+        var atStart = track.scrollLeft <= 2;
+        var atEnd = track.scrollLeft >= max - 2;
+        if (leftBtn) leftBtn.classList.toggle('hidden', !scrollable || atStart);
+        if (rightBtn) rightBtn.classList.toggle('hidden', !scrollable || atEnd);
+        if (fadeL) fadeL.style.opacity = scrollable && !atStart ? '1' : '0';
+        if (fadeR) fadeR.style.opacity = scrollable && !atEnd ? '1' : '0';
+      }
+      leftBtn && leftBtn.addEventListener('click', function () { track.scrollBy({ left: -160, behavior: 'smooth' }); });
+      rightBtn && rightBtn.addEventListener('click', function () { track.scrollBy({ left: 160, behavior: 'smooth' }); });
+      track.addEventListener('scroll', update);
+      window.addEventListener('resize', update);
+      update();
+    }
+    wireScrollStrip('comp-strip', 'comp-strip-left', 'comp-strip-right', 'comp-strip-fade-l', 'comp-strip-fade-r');
+  </script>
+  <script>
+    // Keeps "Live"/"Result pending" badges honest while a tab stays open:
+    // both states are pure wall-clock estimates derived from kickoff time
+    // (see app/main.py::_live_state — no live score feed exists), so they
+    // can be recomputed entirely client-side without a network request.
+    // Re-checks periodically and whenever the tab regains focus, so a card
+    // left open across the live/pending boundary updates on its own instead
+    // of only refreshing on next page load.
+    var ESTIMATED_MATCH_DURATION_MS = (2 * 60 + 15) * 60 * 1000;
+    function refreshLiveStates() {
+      var now = Date.now();
+      document.querySelectorAll('[data-live-container]').forEach(function (el) {
+        if (el.dataset.status !== 'scheduled') return;
+        var kickoff = new Date(el.dataset.kickoff).getTime();
+        var state = 'scheduled';
+        if (now >= kickoff) {
+          state = (now - kickoff <= ESTIMATED_MATCH_DURATION_MS) ? 'live' : 'pending';
+        }
+        el.querySelectorAll('[data-variant]').forEach(function (v) {
+          v.classList.toggle('hidden', v.dataset.variant !== state);
+        });
+      });
+    }
+    setInterval(refreshLiveStates, 30000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) refreshLiveStates(); });
+  </script>
+  <script>
+    // Theme toggle: suppress all transitions for one frame so the flip is a
+    // single repaint regardless of what transition classes exist anywhere.
+    (function () {
+      var btn = document.getElementById('theme-toggle');
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        var el = document.documentElement;
+        el.classList.add('theme-switching');
+        var isDark = el.classList.toggle('dark');
+        localStorage.theme = isDark ? 'dark' : 'light';
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { el.classList.remove('theme-switching'); });
+        });
+      });
+    })();
+  </script>
+  <script>
+    // Team search: keyboard nav, dismiss, "/" focus shortcut.
+    (function () {
+      var root = document.getElementById('team-search');
+      if (!root) return;
+      var input = document.getElementById('team-search-input');
+      var panel = document.getElementById('team-search-results');
+
+      function items() { return Array.prototype.slice.call(panel.querySelectorAll('[data-search-item]')); }
+      function close() { panel.innerHTML = ''; input.setAttribute('aria-expanded', 'false'); }
+
+      document.body.addEventListener('htmx:afterSwap', function (e) {
+        if (e.target === panel) input.setAttribute('aria-expanded', panel.children.length ? 'true' : 'false');
+      });
+
+      root.addEventListener('keydown', function (e) {
+        var list = items();
+        if (e.key === 'Escape') { close(); input.blur(); return; }
+        if (!list.length) return;
+        var i = list.indexOf(document.activeElement);
+        if (e.key === 'ArrowDown') { e.preventDefault(); (list[i + 1] || list[0]).focus(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); i <= 0 ? input.focus() : list[i - 1].focus(); }
+      });
+
+      document.addEventListener('click', function (e) { if (!root.contains(e.target)) close(); });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== '/' || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+        e.preventDefault(); input.focus(); input.select();
+      });
+    })();
+  </script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

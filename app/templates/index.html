@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Upcoming Fixtures — Match Predictor{% endblock %}
+{% block title %}Upcoming Fixtures · Xpected{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold tracking-tight mb-1">Upcoming Fixtures</h1>
 <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">Next 7 days, across every competition we cover.</p>
@@ -12,7 +12,7 @@
 
 {% for day in days %}
 <section class="mb-8">
-  <h2 class="flex items-center gap-3 text-xs font-bold text-gray-400 dark:text-gray-500 mb-3 uppercase tracking-widest">
+  <h2 class="flex items-center gap-3 text-xs font-bold text-gray-400 dark:text-gray-400 mb-3 uppercase tracking-widest">
     {{ day.label }}
     <span class="h-px flex-1 bg-gray-200 dark:bg-gray-800"></span>
   </h2>

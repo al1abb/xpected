@@ -1,0 +1,17 @@
+{%- from "_badge.html" import team_badge -%}
+{%- if results -%}
+<ul class="max-h-80 overflow-y-auto py-1">
+  {%- for t in results %}
+  <li>
+    <a href="/team/{{ t.id }}" role="option" data-search-item
+       class="flex items-center gap-2.5 px-3 py-2 text-sm outline-none hover:bg-gray-50 focus:bg-gray-50 dark:hover:bg-gray-800 dark:focus:bg-gray-800">
+      {{ team_badge(t.name, t.logo_url, t.color, 5) }}
+      <span class="truncate font-medium">{{ t.name }}</span>
+      {%- if t.country %}<span class="ml-auto shrink-0 text-xs text-gray-500 dark:text-gray-400">{{ t.country }}</span>{% endif -%}
+    </a>
+  </li>
+  {%- endfor %}
+</ul>
+{%- elif q|length >= 2 -%}
+<p class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">No teams match "{{ q }}".</p>
+{%- endif -%}

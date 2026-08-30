@@ -1,16 +1,28 @@
-{% macro team_badge(name, logo_url, color, size=6) %}
+{% macro _initials(name) %}{{ (name.split()|map('first')|join(''))[:2]|upper }}{% endmacro %}
+
+{% macro team_badge(name, logo_url, color, size=8) %}
 {% if logo_url %}
 <img src="{{ logo_url }}" alt="" class="h-{{ size }} w-{{ size }} shrink-0 object-contain" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-<span class="hidden h-{{ size }} w-{{ size }} shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white" style="background-color: {{ color }};">{{ name[0]|upper }}</span>
+<span class="hidden h-{{ size }} w-{{ size }} shrink-0 rounded-full items-center justify-center text-[0.65rem] font-bold text-white leading-none" style="background-color: {{ color }};">{{ _initials(name) }}</span>
 {% else %}
-<span class="flex h-{{ size }} w-{{ size }} shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white" style="background-color: {{ color }};">{{ name[0]|upper }}</span>
+<span class="flex h-{{ size }} w-{{ size }} shrink-0 rounded-full items-center justify-center text-[0.65rem] font-bold text-white leading-none" style="background-color: {{ color }};">{{ _initials(name) }}</span>
 {% endif %}
 {% endmacro %}
 
 {% macro competition_badge(comp, size=6) %}
 {% set logo = competition_logo(comp.slug) %}
 {% if logo %}
-<img src="{{ logo }}" alt="" class="h-{{ size }} w-{{ size }} shrink-0 object-contain">
+{# Wrapped in a light, faintly-bordered chip: several emblems are dark/
+   monochrome line art (e.g. Serie A) that disappears against a dark navbar
+   or the active indigo pill without a consistent light backdrop.
+   Every crest asset is actually a square canvas (confirmed by fetching and
+   measuring the PNGs — 200x200, one 100x100) with the wordmark letterboxed
+   inside transparent padding, so there's no aspect-ratio to preserve here;
+   the only real lever on "logo looks small" is minimizing the chip's own
+   padding so more of the canvas's ink is visible. #}
+<span class="inline-flex shrink-0 items-center justify-center rounded-md bg-white/95 ring-1 ring-black/10 p-[2px]">
+<img src="{{ logo }}" alt="" class="h-{{ size }} w-{{ size }} object-contain">
+</span>
 {% else %}
 <span class="text-base leading-none">{{ country_flag(comp.country) or "🏆" }}</span>
 {% endif %}

@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% from "_bar.html" import probability_bar, no_prediction_placeholder %}
 {% from "_badge.html" import team_badge, competition_badge %}
-{% block title %}{{ home.canonical_name }} vs {{ away.canonical_name }} — Match Predictor{% endblock %}
+{% block title %}{{ home.canonical_name }} vs {{ away.canonical_name }} · Xpected{% endblock %}
 {% block content %}
 
 <p class="text-sm text-gray-500 dark:text-gray-400 mb-4 flex items-center justify-center gap-1.5 flex-wrap">
-  {{ competition_badge(competition, 4) }}
+  {{ competition_badge(competition, 5) }}
   <a href="/competition/{{ competition.slug }}" class="hover:underline">{{ competition.name }}</a>
   {% if match.round %} · {{ match.round }}{% endif %} · {{ kickoff_display }}
   {% if match.neutral_venue %} · neutral venue{% endif %}
@@ -21,10 +21,22 @@
     {% if match.status == "finished" %}
     <div class="shrink-0 px-2">
       <div class="text-3xl sm:text-4xl font-mono font-black tabular-nums">{{ match.home_goals }}–{{ match.away_goals }}</div>
-      <div class="text-xs text-gray-400 mt-1 uppercase tracking-wide">Full time</div>
+      <div class="text-xs text-gray-400 dark:text-gray-400 mt-1 uppercase tracking-wide">Full time</div>
     </div>
     {% else %}
-    <div class="shrink-0 text-gray-300 dark:text-gray-600 font-bold text-sm">vs</div>
+    <div class="shrink-0 px-2 text-center" data-live-container data-status="scheduled" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
+      <div data-variant="scheduled" class="text-gray-300 dark:text-gray-600 font-bold text-sm {{ 'hidden' if live_state }}">vs</div>
+      <div data-variant="live" class="{{ 'hidden' if live_state != 'live' }}">
+        <div class="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold uppercase tracking-wide text-sm" title="Estimated from kickoff time: we don't have a real-time score feed">
+          <span class="h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>Live
+        </div>
+        <div class="text-xs text-gray-400 dark:text-gray-400 mt-1">estimated from kickoff time</div>
+      </div>
+      <div data-variant="pending" class="{{ 'hidden' if live_state != 'pending' }}">
+        <div class="text-amber-600 dark:text-amber-400 font-bold text-sm">⏳ Result pending</div>
+        <div class="text-xs text-gray-400 dark:text-gray-400 mt-1">kickoff has passed</div>
+      </div>
+    </div>
     {% endif %}
 
     <a href="/team/{{ away.id }}" class="flex flex-1 flex-col items-center gap-2 group min-w-0">
@@ -35,8 +47,11 @@
 </div>
 
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6 mb-6">
-  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-4">
-    {% if match.status == "finished" %}Pre-match prediction{% else %}Prediction{% endif %}
+  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-4">
+    {% if match.status == "finished" %}Pre-match prediction
+    {% elif live_state %}Pre-match prediction · kickoff has passed
+    {% else %}Prediction
+    {% endif %}
   </h2>
   {% if prediction %}
     {{ probability_bar(home.canonical_name, home_color, prediction.home_win_prob * 100, prediction.draw_prob * 100, away.canonical_name, away_color, prediction.away_win_prob * 100) }}
@@ -51,47 +66,47 @@
       <div class="rounded-lg bg-gray-50 dark:bg-gray-800/60 px-3 py-2.5"><div class="text-gray-500 dark:text-gray-400 text-xs mb-0.5">Both teams to score</div><div class="font-bold">{{ '%.0f'|format(prediction.btts_prob * 100) }}%</div></div>
       <div class="rounded-lg bg-gray-50 dark:bg-gray-800/60 px-3 py-2.5"><div class="text-gray-500 dark:text-gray-400 text-xs mb-0.5">Model confidence</div><div class="font-bold capitalize">{{ prediction.confidence }}</div></div>
     </div>
-    <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mt-6 mb-2">Most likely scorelines</h3>
+    <h3 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mt-6 mb-2">Most likely scorelines</h3>
     <div class="flex flex-wrap gap-2">
       {% for s in prediction.top_scorelines %}
-      <span class="rounded-full bg-gray-100 dark:bg-gray-800 px-3 py-1 text-sm font-mono font-semibold">{{ s.score }} <span class="text-gray-500 font-normal">{{ '%.0f'|format(s.prob * 100) }}%</span></span>
+      <span class="rounded-full bg-gray-100 dark:bg-gray-800 px-3 py-1 text-sm font-mono font-semibold">{{ s.score }} <span class="text-gray-500 dark:text-gray-400 font-normal">{{ '%.0f'|format(s.prob * 100) }}%</span></span>
       {% endfor %}
     </div>
     {% if market %}
     <div class="mt-6 pt-5 border-t border-gray-100 dark:border-gray-800">
-      <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
+      <h3 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">
         Compared to the betting market
-        <span class="font-normal normal-case text-gray-400 tracking-normal">— reference only, not used as a model input</span>
+        <span class="font-normal normal-case text-gray-400 dark:text-gray-400 tracking-normal">(reference only, not used as a model input)</span>
       </h3>
       <div class="grid grid-cols-3 gap-4 text-sm">
         <div>
           <div class="text-gray-500 dark:text-gray-400">{{ home.canonical_name }}</div>
-          <div class="font-bold">{{ '%.0f'|format(prediction.home_win_prob * 100) }}% <span class="text-gray-400 font-normal">vs {{ '%.0f'|format(market.home) }}%</span></div>
+          <div class="font-bold">{{ '%.0f'|format(prediction.home_win_prob * 100) }}% <span class="text-gray-400 dark:text-gray-400 font-normal">vs {{ '%.0f'|format(market.home) }}%</span></div>
         </div>
         <div>
           <div class="text-gray-500 dark:text-gray-400">Draw</div>
-          <div class="font-bold">{{ '%.0f'|format(prediction.draw_prob * 100) }}% <span class="text-gray-400 font-normal">vs {{ '%.0f'|format(market.draw) }}%</span></div>
+          <div class="font-bold">{{ '%.0f'|format(prediction.draw_prob * 100) }}% <span class="text-gray-400 dark:text-gray-400 font-normal">vs {{ '%.0f'|format(market.draw) }}%</span></div>
         </div>
         <div>
           <div class="text-gray-500 dark:text-gray-400">{{ away.canonical_name }}</div>
-          <div class="font-bold">{{ '%.0f'|format(prediction.away_win_prob * 100) }}% <span class="text-gray-400 font-normal">vs {{ '%.0f'|format(market.away) }}%</span></div>
+          <div class="font-bold">{{ '%.0f'|format(prediction.away_win_prob * 100) }}% <span class="text-gray-400 dark:text-gray-400 font-normal">vs {{ '%.0f'|format(market.away) }}%</span></div>
         </div>
       </div>
     </div>
     {% endif %}
   {% else %}
-    {{ no_prediction_placeholder() }}
+    {{ no_prediction_placeholder(no_prediction_reason or 'pending') }}
   {% endif %}
 </div>
 
 <div class="grid sm:grid-cols-2 gap-4 mb-6">
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
-    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">{{ home.canonical_name }} — last 5</h2>
+    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">{{ home.canonical_name }} · last 5</h2>
     <div class="grid gap-2">
       {% for f in home_form %}
       <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
         <span class="truncate text-gray-700 dark:text-gray-300">{{ f.opponent }} <span class="text-gray-400">{% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span></span>
-        <span class="font-mono text-gray-500 px-2">{{ f.score }}</span>
+        <span class="font-mono text-gray-500 dark:text-gray-400 px-2">{{ f.score }}</span>
         <span class="w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-bold text-white {{ f.color_class }}">{{ f.result_letter }}</span>
       </a>
       {% else %}
@@ -100,12 +115,12 @@
     </div>
   </div>
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
-    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">{{ away.canonical_name }} — last 5</h2>
+    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">{{ away.canonical_name }} · last 5</h2>
     <div class="grid gap-2">
       {% for f in away_form %}
       <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
         <span class="truncate text-gray-700 dark:text-gray-300">{{ f.opponent }} <span class="text-gray-400">{% if f.venue == 'home' %}(H){% else %}(A){% endif %}</span></span>
-        <span class="font-mono text-gray-500 px-2">{{ f.score }}</span>
+        <span class="font-mono text-gray-500 dark:text-gray-400 px-2">{{ f.score }}</span>
         <span class="w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-bold text-white {{ f.color_class }}">{{ f.result_letter }}</span>
       </a>
       {% else %}
@@ -116,11 +131,11 @@
 </div>
 
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
-  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Head-to-head</h2>
+  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">Head-to-head</h2>
   <div class="grid gap-1">
     {% for h in head_to_head %}
     <a href="/match/{{ h.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
-      <span class="text-xs text-gray-400 w-20 shrink-0">{{ h.date_display }}</span>
+      <span class="text-xs text-gray-400 dark:text-gray-400 w-20 shrink-0">{{ h.date_display }}</span>
       <span class="truncate text-gray-700 dark:text-gray-300">{{ h.home_name }}</span>
       <span class="font-mono font-bold px-3 text-gray-900 dark:text-gray-100">{{ h.match.home_goals }}–{{ h.match.away_goals }}</span>
       <span class="truncate text-right text-gray-700 dark:text-gray-300">{{ h.away_name }}</span>

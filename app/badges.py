@@ -31,6 +31,26 @@ COUNTRY_FLAG_EMOJI: dict[str, str] = {
     "Azerbaijan": "🇦🇿",
 }
 
+# Short labels for the compact nav strip — full names are long enough
+# ("UEFA Europa Conference League") that a one-line horizontal strip of all
+# 12 competitions needs an abbreviation. Full name stays available via
+# title/aria-label at the call site, so nothing is lost, just not shown by
+# default in the strip.
+COMPETITION_SHORT_NAMES: dict[str, str] = {
+    "champions-league": "Champions",
+    "europa-league": "Europa",
+    "conference-league": "Conference",
+    "premier-league": "Premier League",
+    "la-liga": "La Liga",
+    "serie-a": "Serie A",
+    "bundesliga": "Bundesliga",
+    "ligue-1": "Ligue 1",
+    "eredivisie": "Eredivisie",
+    "primeira-liga": "Primeira",
+    "super-lig": "Süper Lig",
+    "azerbaijan-premyer-liqa": "Azerbaijan",
+}
+
 
 def competition_logo(slug: str) -> str | None:
     return COMPETITION_LOGOS.get(slug)
@@ -38,3 +58,7 @@ def competition_logo(slug: str) -> str | None:
 
 def country_flag(country: str) -> str | None:
     return COUNTRY_FLAG_EMOJI.get(country)
+
+
+def competition_short(slug: str, fallback: str = "") -> str:
+    return COMPETITION_SHORT_NAMES.get(slug) or fallback

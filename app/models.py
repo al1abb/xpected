@@ -235,6 +235,31 @@ class IngestLog(Base):
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class PlayerStat(Base):
+    """Top scorers/assists per competition — deliberately simple (no lineup or
+    formation modeling attached, see future-plans.md for that larger scope).
+    Synced occasionally via scripts/sync_player_stats.py, not part of the
+    regular fixture-refresh loop."""
+
+    __tablename__ = "player_stats"
+    __table_args__ = (
+        UniqueConstraint("competition_id", "category", "rank", name="uq_player_stat_competition_category_rank"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    competition_id: Mapped[int] = mapped_column(ForeignKey("competitions.id"))
+    season_label: Mapped[str] = mapped_column(String(16))  # e.g. "2025/26"
+    category: Mapped[str] = mapped_column(String(16))  # 'goals' | 'assists'
+    rank: Mapped[int] = mapped_column(Integer)
+    player_name: Mapped[str] = mapped_column(String(128))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    value: Mapped[int] = mapped_column(Integer)
+    af_player_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    team: Mapped[Team | None] = relationship()
+
+
 class ApiBudget(Base):
     """Daily request ledger — ingest refuses to call API-Football once cap is hit."""
 
