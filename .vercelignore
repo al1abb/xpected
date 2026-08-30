@@ -1,0 +1,11 @@
+tests/
+scripts/
+data/raw/
+data/tune_accuracy_results.json
+images/
+.venv/
+.pytest_cache/
+*.egg-info/
+.vscode/
+.idea/
+future-plans.md

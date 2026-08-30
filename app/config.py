@@ -21,11 +21,16 @@ class Settings(BaseSettings):
     football_data_org_token: str = ""
     database_url: str = f"sqlite:///{(BASE_DIR / 'data' / 'app.db').as_posix()}"
     stale_after_hours: int = 36
+    # Vercel sets this env var automatically in its build/runtime environment —
+    # not something we set ourselves. Used to switch to a writable /tmp copy
+    # of the DB and cache dir, since Vercel's filesystem is read-only except
+    # /tmp (see app/db.py and the RAW_DATA_DIR override below).
+    vercel: str = ""
 
 
 settings = Settings()
 
-RAW_DATA_DIR = BASE_DIR / "data" / "raw"
+RAW_DATA_DIR = Path("/tmp/raw") if settings.vercel else (BASE_DIR / "data" / "raw")
 FOOTBALL_DATA_CSV_BASE = "https://www.football-data.co.uk"
 CLUBELO_API_BASE = "http://api.clubelo.com"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
