@@ -2,7 +2,7 @@ import datetime as dt
 import json
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func, or_, select
@@ -13,6 +13,9 @@ from app.colors import resolve_match_colors, team_colors
 from app.config import BASE_DIR, settings
 from app.db import SessionLocal, init_db
 from app.models import Competition, EloRating, IngestLog, Match, ModelRun, PlayerStat, Prediction, Team, TeamAlias
+from ingest.football_data_org_aliases import FD_ORG_TO_CANONICAL
+from ingest.live_scores import fetch_live_matches
+from ingest.resolve import normalize
 from ingest.seasons import current_season_start_year
 from model import backtest, league_strength
 from model.backtest import devigged_market_probs
@@ -499,6 +502,71 @@ def search_teams(request: Request, q: str = "", slot: str | None = None, other: 
         return templates.TemplateResponse(
             request, "_search_results.html", {"request": request, "results": rows, "q": term}
         )
+    finally:
+        session.close()
+
+
+# football-data.org's live-match window (~6h back covers a match that kicked
+# off hours ago and is still somehow marked IN_PLAY by a source hiccup; ~1h
+# forward is slack for kickoff-time drift between sources).
+_LIVE_SCORE_LOOKBACK = dt.timedelta(hours=6)
+_LIVE_SCORE_LOOKAHEAD = dt.timedelta(hours=1)
+
+
+@app.get("/api/live-scores")
+def live_scores():
+    """Real score + clock for whichever of our tracked matches football-data.org
+    currently has IN_PLAY/PAUSED, keyed by our own Match.id so the frontend can
+    drop it straight into the card it already rendered. Best-effort: any
+    resolution failure just drops that one match rather than erroring the
+    whole response — see ingest/live_scores.py for why this never raises."""
+    raw_matches = fetch_live_matches()
+    if not raw_matches:
+        return JSONResponse({"matches": {}})
+
+    session = get_session()
+    try:
+        teams_by_norm = {normalize(name): team_id for team_id, name in session.query(Team.id, Team.canonical_name)}
+        now = dt.datetime.utcnow()
+
+        result: dict[str, dict] = {}
+        for row in raw_matches:
+            competition = session.query(Competition).filter_by(slug=row["competition_slug"]).one_or_none()
+            if competition is None:
+                continue
+            home_id = teams_by_norm.get(normalize(FD_ORG_TO_CANONICAL.get(row["home_name"], row["home_name"])))
+            away_id = teams_by_norm.get(normalize(FD_ORG_TO_CANONICAL.get(row["away_name"], row["away_name"])))
+            if home_id is None or away_id is None:
+                continue
+
+            # .all(), not .one_or_none(): the same real fixture can exist as more
+            # than one Match row when two sources disagree on the exact kickoff
+            # time (confirmed happening, e.g. fixturedownload vs football_data
+            # both creating a row for the same Lecce–Roma game a source-specific
+            # ~1h apart). Apply the live score to every candidate rather than
+            # guessing which row is "the real one" — a stray duplicate card is a
+            # separate, pre-existing ingest-dedup gap, not something to paper
+            # over by picking one arbitrarily and leaving its twin stale.
+            candidates = (
+                session.query(Match)
+                .filter(
+                    Match.competition_id == competition.id,
+                    Match.home_team_id == home_id,
+                    Match.away_team_id == away_id,
+                    Match.status == "scheduled",
+                    Match.utc_kickoff >= now - _LIVE_SCORE_LOOKBACK,
+                    Match.utc_kickoff <= now + _LIVE_SCORE_LOOKAHEAD,
+                )
+                .all()
+            )
+            if not candidates or row["home_goals"] is None or row["away_goals"] is None:
+                continue
+
+            clock = "HT" if row["status"] == "PAUSED" else (f"{row['minute']}'" if row["minute"] is not None else None)
+            for match in candidates:
+                result[str(match.id)] = {"home_goals": row["home_goals"], "away_goals": row["away_goals"], "clock": clock}
+
+        return JSONResponse({"matches": result})
     finally:
         session.close()
 

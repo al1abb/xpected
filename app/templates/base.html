@@ -288,6 +288,49 @@
     document.addEventListener('visibilitychange', function () { if (!document.hidden) refreshLiveStates(); });
   </script>
   <script>
+    // Real score/clock overlay for the subset of competitions
+    // /api/live-scores can actually answer for (see ingest/live_scores.py).
+    // Only polls when a card on the page is currently showing the "live"
+    // estimate badge — no point hitting the endpoint from pages with no
+    // live match on them. A match this can't resolve (unsupported
+    // competition, or football-data.org just doesn't have it) silently
+    // keeps today's plain pulsing "Live" badge — no error, just no overlay.
+    function refreshRealLiveScores() {
+      var containers = Array.prototype.filter.call(
+        document.querySelectorAll('[data-live-container][data-match-id]'),
+        function (el) {
+          var live = el.querySelector('[data-variant="live"]');
+          return live && !live.classList.contains('hidden');
+        }
+      );
+      if (!containers.length) return;
+      fetch('/api/live-scores')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var matches = data.matches || {};
+          containers.forEach(function (el) {
+            var info = matches[el.dataset.matchId];
+            if (!info) return;
+            var scoreText = info.home_goals + '–' + info.away_goals + (info.clock ? ' · ' + info.clock : '');
+            el.querySelectorAll('[data-live-score]').forEach(function (s) { s.textContent = ' ' + scoreText; });
+            var big = el.querySelector('[data-live-score-big]');
+            if (big) {
+              big.textContent = info.home_goals + '–' + info.away_goals;
+              big.classList.remove('hidden');
+            }
+            var caption = el.querySelector('[data-live-caption]');
+            if (caption && info.clock) caption.textContent = info.clock + ' · live score';
+            var titleEl = el.querySelector('[data-live-title]');
+            if (titleEl) titleEl.removeAttribute('title');
+          });
+        })
+        .catch(function () {});
+    }
+    refreshRealLiveScores();
+    setInterval(refreshRealLiveScores, 25000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) refreshRealLiveScores(); });
+  </script>
+  <script>
     // Theme toggle: suppress all transitions for one frame so the flip is a
     // single repaint regardless of what transition classes exist anywhere.
     (function () {

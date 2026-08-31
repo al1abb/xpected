@@ -1,0 +1,93 @@
+"""Real live scores for the subset of competitions football-data.org's free
+TIER_ONE plan covers: Premier League, La Liga, Serie A, Bundesliga, Ligue 1,
+Eredivisie, Primeira Liga, and Champions League — confirmed live via
+GET /v4/competitions (see ingest/football_data_org.py's docstring for the
+same check). Europa League (TIER_TWO), Conference League (TIER_FOUR), Süper
+Lig and Azerbaijan Premyer Liqa (not listed at any tier) aren't covered —
+those competitions keep the wall-clock "Live" estimate in app/main.py with
+no real score.
+
+Unlike ingest/football_data_org.py (which only ever ingests Champions League
+match rows), this only *reads* the live-matches endpoint — it never creates
+or updates a `Match` row, so it's safe to call from a request-serving route
+with no ingest side effects.
+
+GET /v4/matches?status=LIVE returns every live match across every
+competition in a single call, so polling this endpoint costs one request
+regardless of how many matches are live at once — a very different budget
+profile than API-Football's free tier (see app/main.py::_live_state's
+docstring for why that source was ruled out for this).
+"""
+
+from __future__ import annotations
+
+import json
+
+from app.config import settings
+from ingest.cache import fetch_text
+
+BASE = "https://api.football-data.org/v4"
+
+# football-data.org competition `code` -> our Competition.slug — only the
+# TIER_ONE (free) competitions we track are listed here.
+FD_ORG_COMPETITION_CODES: dict[str, str] = {
+    "PL": "premier-league",
+    "PD": "la-liga",
+    "SA": "serie-a",
+    "BL1": "bundesliga",
+    "FL1": "ligue-1",
+    "DED": "eredivisie",
+    "PPL": "primeira-liga",
+    "CL": "champions-league",
+}
+
+# Cache the live-matches response briefly so several concurrent page
+# requests (or one page polling frequently) coalesce into one upstream call
+# per window rather than one each — well within the free tier's 10 req/min,
+# but no reason to spend budget you don't need to.
+_CACHE_SECONDS = 15
+
+
+def fetch_live_matches() -> list[dict]:
+    """Every currently in-play match in our tracked TIER_ONE competitions.
+
+    Returns [] on any failure (missing token, network error, rate limit) —
+    a live score is a nice-to-have overlay on top of the estimate badge that
+    already exists, never something worth breaking a page render over."""
+    if not settings.football_data_org_token:
+        return []
+
+    try:
+        text = fetch_text(
+            f"{BASE}/matches",
+            subdir="live_scores",
+            max_age_hours=_CACHE_SECONDS / 3600,
+            params={"status": "LIVE"},
+            headers={"X-Auth-Token": settings.football_data_org_token},
+        )
+        raw = json.loads(text)
+    except Exception:
+        return []
+
+    rows = []
+    for match in raw.get("matches", []):
+        slug = FD_ORG_COMPETITION_CODES.get((match.get("competition") or {}).get("code"))
+        if slug is None:
+            continue
+        home_name = (match.get("homeTeam") or {}).get("name")
+        away_name = (match.get("awayTeam") or {}).get("name")
+        if not home_name or not away_name:
+            continue
+        full_time = (match.get("score") or {}).get("fullTime") or {}
+        rows.append(
+            {
+                "competition_slug": slug,
+                "home_name": home_name,
+                "away_name": away_name,
+                "home_goals": full_time.get("home"),
+                "away_goals": full_time.get("away"),
+                "minute": match.get("minute"),
+                "status": match.get("status"),  # "IN_PLAY" | "PAUSED"
+            }
+        )
+    return rows
