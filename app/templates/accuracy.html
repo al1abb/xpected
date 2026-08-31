@@ -19,18 +19,27 @@
   <div class="rounded-2xl border-2 border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/30 p-5">
     <div class="text-xs font-bold uppercase tracking-widest text-indigo-600 dark:text-indigo-400 mb-2">This model</div>
     <div class="text-3xl font-black tabular-nums">{{ '%.1f'|format(result.model.accuracy * 100) }}%</div>
-    <div class="text-xs text-gray-500 mt-1">top-pick accuracy · RPS {{ '%.3f'|format(result.model.rps) }}</div>
+    <div class="text-xs text-gray-500 mt-1">
+      {{ result.model.correct if result.model.correct is defined else (result.model.n * result.model.accuracy)|round|int }}
+      of {{ result.model.n }} correct · RPS {{ '%.3f'|format(result.model.rps) }}
+    </div>
   </div>
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
     <div class="text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Home-advantage baseline</div>
     <div class="text-3xl font-black tabular-nums text-gray-600 dark:text-gray-300">{{ '%.1f'|format(result.home_advantage_baseline.accuracy * 100) }}%</div>
-    <div class="text-xs text-gray-500 mt-1">top-pick accuracy · RPS {{ '%.3f'|format(result.home_advantage_baseline.rps) }}</div>
+    <div class="text-xs text-gray-500 mt-1">
+      {{ result.home_advantage_baseline.correct if result.home_advantage_baseline.correct is defined else (result.home_advantage_baseline.n * result.home_advantage_baseline.accuracy)|round|int }}
+      of {{ result.home_advantage_baseline.n }} correct · RPS {{ '%.3f'|format(result.home_advantage_baseline.rps) }}
+    </div>
   </div>
   {% if result.market_baseline.n %}
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
     <div class="text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Bookmaker odds (reference)</div>
     <div class="text-3xl font-black tabular-nums text-gray-600 dark:text-gray-300">{{ '%.1f'|format(result.market_baseline.accuracy * 100) }}%</div>
-    <div class="text-xs text-gray-500 mt-1">top-pick accuracy · RPS {{ '%.3f'|format(result.market_baseline.rps) }}</div>
+    <div class="text-xs text-gray-500 mt-1">
+      {{ result.market_baseline.correct if result.market_baseline.correct is defined else (result.market_baseline.n * result.market_baseline.accuracy)|round|int }}
+      of {{ result.market_baseline.n }} correct · RPS {{ '%.3f'|format(result.market_baseline.rps) }}
+    </div>
   </div>
   {% endif %}
 </div>
@@ -69,7 +78,12 @@
   No predictions have both been made ahead of kickoff and seen their match finish yet. Check back once some of the upcoming fixtures have been played.
 </div>
 {% else %}
-<p class="text-xs text-gray-400 mb-5">Tracked {{ live.n }} prediction{{ 's' if live.n != 1 }} · {{ '%.1f'|format(live.accuracy * 100) }}% top-pick accuracy · RPS {{ '%.3f'|format(live.rps) }}</p>
+<p class="text-xs text-gray-400 mb-5">
+  Tracked {{ live.n }} prediction{{ 's' if live.n != 1 }} ·
+  <span class="text-green-600 dark:text-green-500 font-semibold">{{ live.correct }} right</span> ·
+  <span class="text-red-500 font-semibold">{{ live.wrong }} wrong</span> ·
+  {{ '%.1f'|format(live.accuracy * 100) }}% top-pick accuracy · RPS {{ '%.3f'|format(live.rps) }}
+</p>
 
 <div class="grid sm:grid-cols-2 gap-6 mb-8">
   <div>

@@ -106,6 +106,8 @@ class Scoreboard:
             "brier": self.brier_sum / self.n,
             "log_loss": self.log_loss_sum / self.n,
             "accuracy": self.correct_top_pick / self.n,
+            "correct": self.correct_top_pick,
+            "wrong": self.n - self.correct_top_pick,
         }
 
 
