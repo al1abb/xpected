@@ -2,7 +2,7 @@ tests/
 scripts/
 data/raw/
 data/tune_accuracy_results.json
-images/
+/images/
 .venv/
 .pytest_cache/
 *.egg-info/
