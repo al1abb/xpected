@@ -115,19 +115,33 @@ def fetch_recently_finished(*, lookback_days: int = 3) -> list[dict]:
     runs itself, since re-querying a few days back is cheap and stateless.
 
     Returns [] on any failure — same fail-soft contract as fetch_live_matches.
+
+    Deliberately does NOT pass `status=FINISHED` as a server-side filter —
+    confirmed live that it lags behind the match's own `status` field (a
+    same-day match showed status="FINISHED" when queried by date range alone,
+    but was silently absent from the exact same query with status=FINISHED
+    added, evidently an indexing gap on football-data.org's side, not
+    something we can work around except by not depending on it). Fetches the
+    date range unfiltered instead and checks each match's own status
+    client-side, which the live query above already proved is trustworthy.
     """
     if not settings.football_data_org_token:
         return []
 
     today = dt.date.today()
     date_from = today - dt.timedelta(days=lookback_days)
+    # +1 day, not `today` — confirmed live that `dateTo=today` silently
+    # excludes today's own matches from the response (resultSet.last came
+    # back one day short of the requested dateTo every time), so extending
+    # one day past today is what's actually needed to include today.
+    date_to = today + dt.timedelta(days=1)
 
     try:
         text = fetch_text(
             f"{BASE}/matches",
             subdir="live_scores",
             max_age_hours=_CACHE_SECONDS / 3600,
-            params={"status": "FINISHED", "dateFrom": date_from.isoformat(), "dateTo": today.isoformat()},
+            params={"dateFrom": date_from.isoformat(), "dateTo": date_to.isoformat()},
             headers={"X-Auth-Token": settings.football_data_org_token},
         )
         raw = json.loads(text)
@@ -136,6 +150,8 @@ def fetch_recently_finished(*, lookback_days: int = 3) -> list[dict]:
 
     rows = []
     for match in raw.get("matches", []):
+        if match.get("status") != "FINISHED":
+            continue
         slug = FD_ORG_COMPETITION_CODES.get((match.get("competition") or {}).get("code"))
         if slug is None:
             continue
