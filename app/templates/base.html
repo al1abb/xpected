@@ -191,6 +191,15 @@
     </nav>
   </header>
 
+  <div id="live-now-strip" class="hidden border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
+    <div class="mx-auto max-w-5xl px-4 py-2 flex items-center gap-3">
+      <span class="shrink-0 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-red-600 dark:text-red-400">
+        <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live now
+      </span>
+      <div id="live-now-items" class="flex items-center gap-2 overflow-x-auto no-scrollbar"></div>
+    </div>
+  </div>
+
   <main class="mx-auto max-w-5xl px-4 py-6">
     {% if stale_warning %}
     <div class="mb-4 flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 text-sm px-3.5 py-2.5 ring-1 ring-amber-200 dark:ring-amber-800/50">
@@ -268,10 +277,17 @@
     // of only refreshing on next page load.
     var ESTIMATED_MATCH_DURATION_MS = (2 * 60 + 15) * 60 * 1000;
     var SOON_WINDOW_MS = 60 * 60 * 1000;
+    // Populated by refreshRealLiveScores (below) whenever the real live-score
+    // API confirms a match id is actually in play. Once confirmed, the
+    // wall-clock recompute here must not overwrite it — our own kickoff time
+    // for a Match row can be wrong (a known duplicate-row case, off by up to
+    // an hour), so real data always outranks the estimate.
+    var confirmedLiveIds = {};
     function refreshLiveStates() {
       var now = Date.now();
       document.querySelectorAll('[data-live-container]').forEach(function (el) {
         if (el.dataset.status !== 'scheduled') return;
+        if (confirmedLiveIds[el.dataset.matchId]) return;
         var kickoff = new Date(el.dataset.kickoff).getTime();
         var state = 'scheduled';
         if (now >= kickoff) {
@@ -290,27 +306,52 @@
   <script>
     // Real score/clock overlay for the subset of competitions
     // /api/live-scores can actually answer for (see ingest/live_scores.py).
-    // Only polls when a card on the page is currently showing the "live"
-    // estimate badge — no point hitting the endpoint from pages with no
-    // live match on them. A match this can't resolve (unsupported
-    // competition, or football-data.org just doesn't have it) silently
-    // keeps today's plain pulsing "Live" badge — no error, just no overlay.
+    // Polls unconditionally on every page (not just when a card is already
+    // showing the wall-clock "live" estimate) and, when it has real data for
+    // a match, FORCES that card into the live display — deliberately
+    // overriding whatever the wall-clock guess currently shows. This matters
+    // because our own kickoff time for a given Match row can be wrong (e.g.
+    // a duplicate row from a source that mis-times fixtures by up to an
+    // hour, confirmed happening — see app/main.py::live_scores' docstring),
+    // so a card can be sitting on "Soon" or "Result pending" while the real
+    // match is actually live; real data should always win over the guess.
+    // A match this can't resolve (unsupported competition, or
+    // football-data.org just doesn't have it) silently keeps today's plain
+    // wall-clock badge — no error, just no overlay.
+    function teamChipHtml(name, logo, color) {
+      var initials = (name.split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2)).toUpperCase();
+      var fallback = '<span class="hidden h-5 w-5 shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white leading-none" style="background-color:' + color + '">' + initials + '</span>';
+      if (logo) {
+        return '<img src="' + logo + '" alt="" class="h-5 w-5 shrink-0 object-contain" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">' + fallback;
+      }
+      return '<span class="flex h-5 w-5 shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white leading-none" style="background-color:' + color + '">' + initials + '</span>';
+    }
+    function renderLiveNowStrip(live) {
+      var strip = document.getElementById('live-now-strip');
+      var container = document.getElementById('live-now-items');
+      if (!strip || !container) return;
+      if (!live.length) { strip.classList.add('hidden'); container.innerHTML = ''; return; }
+      container.innerHTML = live.map(function (m) {
+        return '<a href="/match/' + m.id + '" class="shrink-0 flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs hover:border-red-400 dark:hover:border-red-700 transition-colors">'
+          + '<span class="text-gray-400 dark:text-gray-500 font-semibold hidden sm:inline">' + m.competition_name + '</span>'
+          + teamChipHtml(m.home_name, m.home_logo, m.home_color)
+          + '<span class="font-mono font-bold">' + m.home_goals + '–' + m.away_goals + '</span>'
+          + teamChipHtml(m.away_name, m.away_logo, m.away_color)
+          + (m.clock ? '<span class="text-red-600 dark:text-red-400 font-bold">' + m.clock + '</span>' : '')
+          + '</a>';
+      }).join('');
+      strip.classList.remove('hidden');
+    }
     function refreshRealLiveScores() {
-      var containers = Array.prototype.filter.call(
-        document.querySelectorAll('[data-live-container][data-match-id]'),
-        function (el) {
-          var live = el.querySelector('[data-variant="live"]');
-          return live && !live.classList.contains('hidden');
-        }
-      );
-      if (!containers.length) return;
       fetch('/api/live-scores')
         .then(function (r) { return r.json(); })
         .then(function (data) {
+          renderLiveNowStrip(data.live || []);
           var matches = data.matches || {};
-          containers.forEach(function (el) {
+          document.querySelectorAll('[data-live-container][data-match-id]').forEach(function (el) {
             var info = matches[el.dataset.matchId];
             if (!info) return;
+            confirmedLiveIds[el.dataset.matchId] = true;
             var scoreText = info.home_goals + '–' + info.away_goals + (info.clock ? ' · ' + info.clock : '');
             el.querySelectorAll('[data-live-score]').forEach(function (s) { s.textContent = ' ' + scoreText; });
             var big = el.querySelector('[data-live-score-big]');
@@ -319,9 +360,14 @@
               big.classList.remove('hidden');
             }
             var caption = el.querySelector('[data-live-caption]');
-            if (caption && info.clock) caption.textContent = info.clock + ' · live score';
+            if (caption) caption.textContent = info.clock ? info.clock + ' · live score' : 'live score';
             var titleEl = el.querySelector('[data-live-title]');
             if (titleEl) titleEl.removeAttribute('title');
+            // Force the "live" variant on, regardless of what the wall-clock
+            // estimate currently shows (see comment above the function).
+            el.querySelectorAll('[data-variant]').forEach(function (v) {
+              v.classList.toggle('hidden', v.dataset.variant !== 'live');
+            });
           });
         })
         .catch(function () {});

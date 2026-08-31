@@ -516,21 +516,27 @@ _LIVE_SCORE_LOOKAHEAD = dt.timedelta(hours=1)
 @app.get("/api/live-scores")
 def live_scores():
     """Real score + clock for whichever of our tracked matches football-data.org
-    currently has IN_PLAY/PAUSED, keyed by our own Match.id so the frontend can
-    drop it straight into the card it already rendered. Best-effort: any
+    currently has IN_PLAY/PAUSED. Returns two shapes of the same data:
+    `matches` (keyed by our Match.id, for the frontend to drop straight into a
+    card it already rendered) and `live` (a flat, self-contained list with
+    team/competition names+crests, for the sitewide "Live now" strip, which
+    has no already-rendered card to attach to on most pages). Best-effort: any
     resolution failure just drops that one match rather than erroring the
     whole response — see ingest/live_scores.py for why this never raises."""
     raw_matches = fetch_live_matches()
     if not raw_matches:
-        return JSONResponse({"matches": {}})
+        return JSONResponse({"matches": {}, "live": []})
 
     session = get_session()
     try:
         teams_by_norm = {normalize(name): team_id for team_id, name in session.query(Team.id, Team.canonical_name)}
         now = dt.datetime.utcnow()
 
-        result: dict[str, dict] = {}
+        matches: dict[str, dict] = {}
+        live: list[dict] = []
         for row in raw_matches:
+            if row["home_goals"] is None or row["away_goals"] is None:
+                continue
             competition = session.query(Competition).filter_by(slug=row["competition_slug"]).one_or_none()
             if competition is None:
                 continue
@@ -538,15 +544,15 @@ def live_scores():
             away_id = teams_by_norm.get(normalize(FD_ORG_TO_CANONICAL.get(row["away_name"], row["away_name"])))
             if home_id is None or away_id is None:
                 continue
+            home, away = session.get(Team, home_id), session.get(Team, away_id)
 
             # .all(), not .one_or_none(): the same real fixture can exist as more
             # than one Match row when two sources disagree on the exact kickoff
-            # time (confirmed happening, e.g. fixturedownload vs football_data
-            # both creating a row for the same Lecce–Roma game a source-specific
-            # ~1h apart). Apply the live score to every candidate rather than
-            # guessing which row is "the real one" — a stray duplicate card is a
-            # separate, pre-existing ingest-dedup gap, not something to paper
-            # over by picking one arbitrarily and leaving its twin stale.
+            # time (confirmed happening, e.g. fixturedownload vs football_data.co.uk
+            # times being UK-local but stored as UTC — off by exactly 1h during
+            # BST, see ingest/footballdata_csv.py). Apply the live score to every
+            # candidate rather than guessing which row is "the real one" — the
+            # underlying duplicate-row gap is separate and not fixed by this route.
             candidates = (
                 session.query(Match)
                 .filter(
@@ -559,14 +565,34 @@ def live_scores():
                 )
                 .all()
             )
-            if not candidates or row["home_goals"] is None or row["away_goals"] is None:
+            if not candidates:
                 continue
 
             clock = "HT" if row["status"] == "PAUSED" else (f"{row['minute']}'" if row["minute"] is not None else None)
             for match in candidates:
-                result[str(match.id)] = {"home_goals": row["home_goals"], "away_goals": row["away_goals"], "clock": clock}
+                matches[str(match.id)] = {"home_goals": row["home_goals"], "away_goals": row["away_goals"], "clock": clock}
 
-        return JSONResponse({"matches": result})
+            home_primary = home.primary_color or team_colors(home.canonical_name)[0]
+            away_primary = away.primary_color or team_colors(away.canonical_name)[0]
+            home_color, away_color = resolve_match_colors(home_primary, away_primary, away.secondary_color)
+            live.append(
+                {
+                    "id": candidates[0].id,
+                    "competition_name": competition.name,
+                    "competition_slug": competition.slug,
+                    "home_name": home.canonical_name,
+                    "away_name": away.canonical_name,
+                    "home_logo": home.logo_url,
+                    "away_logo": away.logo_url,
+                    "home_color": home_color,
+                    "away_color": away_color,
+                    "home_goals": row["home_goals"],
+                    "away_goals": row["away_goals"],
+                    "clock": clock,
+                }
+            )
+
+        return JSONResponse({"matches": matches, "live": live})
     finally:
         session.close()
 
