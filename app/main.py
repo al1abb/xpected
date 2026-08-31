@@ -168,11 +168,16 @@ def _day_label(d: dt.date, today: dt.date) -> str:
 # not a real score/clock feed: kickoff has passed, status hasn't flipped to
 # finished yet, and it's within a plausible match-plus-stoppage window.
 ESTIMATED_MATCH_DURATION = dt.timedelta(hours=2, minutes=15)
+# "Soon" is a pure pre-kickoff heads-up, not an estimate of anything —
+# just "this one's coming up shortly."
+SOON_WINDOW = dt.timedelta(hours=1)
 
 
 def _live_state(match: Match, now: dt.datetime) -> str | None:
-    if match.status != "scheduled" or match.utc_kickoff > now:
+    if match.status != "scheduled":
         return None
+    if match.utc_kickoff > now:
+        return "soon" if match.utc_kickoff - now <= SOON_WINDOW else None
     if now - match.utc_kickoff <= ESTIMATED_MATCH_DURATION:
         return "live"
     return "pending"

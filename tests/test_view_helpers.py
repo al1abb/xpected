@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.main import (
     ESTIMATED_MATCH_DURATION,
+    SOON_WINDOW,
     _live_state,
     group_by_day,
     group_by_month,
@@ -125,12 +126,20 @@ def _match(status, kickoff):
     )
 
 
-def test_live_state_none_for_future_and_finished():
+def test_live_state_none_for_distant_future_and_finished():
     now = dt.datetime(2026, 9, 1, 12, 0)
-    future = _match("scheduled", now + dt.timedelta(hours=1))
+    distant_future = _match("scheduled", now + SOON_WINDOW + dt.timedelta(minutes=1))
     finished = _match("finished", now - dt.timedelta(hours=5))
-    assert _live_state(future, now) is None
+    assert _live_state(distant_future, now) is None
     assert _live_state(finished, now) is None
+
+
+def test_live_state_soon_within_soon_window():
+    now = dt.datetime(2026, 9, 1, 12, 0)
+    about_to_kick_off = _match("scheduled", now + dt.timedelta(minutes=1))
+    edge_of_window = _match("scheduled", now + SOON_WINDOW)
+    assert _live_state(about_to_kick_off, now) == "soon"
+    assert _live_state(edge_of_window, now) == "soon"
 
 
 def test_live_state_live_within_estimated_duration():

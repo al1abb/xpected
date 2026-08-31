@@ -1,7 +1,11 @@
 """Apply ingest/logo_overrides.py's manual crest corrections. Unlike the
 regular crest syncs (fill-gaps-only, `if team.logo_url is None`), this
 unconditionally overwrites — that's the point, since it exists specifically
-to fix an already-set wrong URL."""
+to fix an already-set wrong URL.
+
+Run this *before* scripts/apply_name_overrides.py on a freshly rebuilt DB:
+this is keyed by the source's original (wrong) name, so renaming first would
+make this lookup miss."""
 
 import sys
 from pathlib import Path

@@ -267,6 +267,7 @@
     // left open across the live/pending boundary updates on its own instead
     // of only refreshing on next page load.
     var ESTIMATED_MATCH_DURATION_MS = (2 * 60 + 15) * 60 * 1000;
+    var SOON_WINDOW_MS = 60 * 60 * 1000;
     function refreshLiveStates() {
       var now = Date.now();
       document.querySelectorAll('[data-live-container]').forEach(function (el) {
@@ -275,6 +276,8 @@
         var state = 'scheduled';
         if (now >= kickoff) {
           state = (now - kickoff <= ESTIMATED_MATCH_DURATION_MS) ? 'live' : 'pending';
+        } else if (kickoff - now <= SOON_WINDOW_MS) {
+          state = 'soon';
         }
         el.querySelectorAll('[data-variant]').forEach(function (v) {
           v.classList.toggle('hidden', v.dataset.variant !== state);

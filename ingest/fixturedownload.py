@@ -38,6 +38,18 @@ from ingest.seasons import current_season_start_year
 
 SOURCE = "fixturedownload"
 
+# fixturedownload.com's Champions/Europa/Conference League feeds abbreviate
+# Paris Saint-Germain to bare "Paris" — that collides with Paris FC's own
+# name after ingest/resolve.py's normalize() strips "fc" as a stopword
+# ("Paris FC" -> "paris", same as "Paris" -> "paris"), so the unmodified raw
+# name resolves to the wrong Ligue 1 club instead of PSG. Confirmed live:
+# the ligue-1 feed uses the unambiguous full names "Paris FC" and "Paris
+# Saint-Germain", so this rewrite only ever fires for the UEFA feeds where
+# the collision actually occurs.
+NAME_FIXES = {
+    "Paris": "Paris Saint-Germain",
+}
+
 # our competition slug -> fixturedownload.com's slug (only competitions covered there).
 # Azerbaijan Premyer Liqa deliberately absent — see module docstring.
 FD_SLUGS = {
@@ -70,11 +82,13 @@ def parse_feed(text: str) -> list[dict]:
         if kickoff is None or not item.get("HomeTeam") or not item.get("AwayTeam"):
             continue
         home_goals, away_goals = item.get("HomeTeamScore"), item.get("AwayTeamScore")
+        home_name = item["HomeTeam"].strip()
+        away_name = item["AwayTeam"].strip()
         rows.append(
             {
                 "kickoff": kickoff,
-                "home_name": item["HomeTeam"].strip(),
-                "away_name": item["AwayTeam"].strip(),
+                "home_name": NAME_FIXES.get(home_name, home_name),
+                "away_name": NAME_FIXES.get(away_name, away_name),
                 "status": "finished" if home_goals is not None and away_goals is not None else "scheduled",
                 "home_goals": home_goals,
                 "away_goals": away_goals,

@@ -26,6 +26,12 @@
     {% else %}
     <div class="shrink-0 px-2 text-center" data-live-container data-status="scheduled" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
       <div data-variant="scheduled" class="text-gray-300 dark:text-gray-600 font-bold text-sm {{ 'hidden' if live_state }}">vs</div>
+      <div data-variant="soon" class="{{ 'hidden' if live_state != 'soon' }}">
+        <div class="inline-flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-bold uppercase tracking-wide text-sm" title="Kicks off soon">
+          <span class="h-2 w-2 rounded-full bg-sky-500"></span>Soon
+        </div>
+        <div class="text-xs text-gray-400 dark:text-gray-400 mt-1">{{ kickoff_display }}</div>
+      </div>
       <div data-variant="live" class="{{ 'hidden' if live_state != 'live' }}">
         <div class="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold uppercase tracking-wide text-sm" title="Estimated from kickoff time: we don't have a real-time score feed">
           <span class="h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>Live
@@ -49,7 +55,7 @@
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6 mb-6">
   <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-4">
     {% if match.status == "finished" %}Pre-match prediction
-    {% elif live_state %}Pre-match prediction · kickoff has passed
+    {% elif live_state in ("live", "pending") %}Pre-match prediction · kickoff has passed
     {% else %}Prediction
     {% endif %}
   </h2>
