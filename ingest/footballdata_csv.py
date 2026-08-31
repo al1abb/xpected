@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,8 @@ from ingest.resolve import get_or_create_team
 from ingest.seasons import fd_season_codes_back
 
 SOURCE = "football_data"
+
+_UK_TZ = ZoneInfo("Europe/London")
 
 MAIN_LEAGUE_COMPETITIONS = [c for c in COMPETITIONS if c["fd_code"]]
 
@@ -58,9 +61,16 @@ def _parse_date(date_str: str, time_str: str) -> dt.datetime | None:
     except ValueError:
         t = dt.time(15, 0)
 
-    # football-data.co.uk times are UK local (not UTC); treated as UTC here since
-    # day-level resolution is what the model actually depends on.
-    return dt.datetime.combine(d, t)
+    # football-data.co.uk times are UK local, not UTC — previously treated as UTC
+    # directly (harmless for the model, which only depends on day-level
+    # resolution, but wrong by exactly 1h during BST) and confirmed to be the
+    # cause of duplicate Match rows against UTC-accurate sources like
+    # fixturedownload.com, which then produced wrong "Soon"/"Live" badges on
+    # whichever duplicate had the wrong time. Converting properly here fixes it
+    # at the source; see scripts/fix_footballdata_timezone.py for the one-time
+    # backfill of rows already ingested under the old, wrong behavior.
+    local = dt.datetime.combine(d, t, tzinfo=_UK_TZ)
+    return local.astimezone(dt.timezone.utc).replace(tzinfo=None)
 
 
 def _int_or_none(value: str) -> int | None:
