@@ -19,12 +19,12 @@
     </a>
 
     {% if match.status == "finished" %}
-    <div class="shrink-0 px-2">
+    <div class="shrink-0 px-2 min-w-[9rem]">
       <div class="text-3xl sm:text-4xl font-mono font-black tabular-nums">{{ match.home_goals }}–{{ match.away_goals }}</div>
       <div class="text-xs text-gray-400 dark:text-gray-400 mt-1 uppercase tracking-wide">Full time</div>
     </div>
     {% else %}
-    <div class="shrink-0 px-2 text-center" data-live-container data-status="scheduled" data-match-id="{{ match.id }}" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
+    <div class="shrink-0 px-2 min-w-[9rem] text-center" data-live-container data-status="scheduled" data-match-id="{{ match.id }}" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
       <div data-variant="scheduled" class="text-gray-300 dark:text-gray-600 font-bold text-sm {{ 'hidden' if live_state }}">vs</div>
       <div data-variant="soon" class="{{ 'hidden' if live_state != 'soon' }}">
         <div class="inline-flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-bold uppercase tracking-wide text-sm">
