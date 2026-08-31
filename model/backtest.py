@@ -131,12 +131,34 @@ def _latest_pre_kickoff_predictions(session: Session) -> list[tuple[Prediction, 
     return list(latest.values())
 
 
+def _tracked_row(pred: Prediction, match: Match) -> tuple[tuple[float, float, float], int, int, bool, dict]:
+    """Shared scoring + display-row logic for one tracked (Prediction, Match)
+    pair — used by both live_tracking_summary's aggregate stats and the
+    paginated tracked_predictions_page, so the two never drift apart."""
+    probs = (pred.home_win_prob, pred.draw_prob, pred.away_win_prob)
+    actual = _actual_outcome(match)
+    top_idx = int(np.argmax(probs))
+    hit = top_idx == actual
+    row = {
+        "match": match,
+        "predicted_probs": probs,
+        "predicted_pick": ["home", "draw", "away"][top_idx],
+        "predicted_confidence": probs[top_idx],
+        "actual_outcome": ["home", "draw", "away"][actual],
+        "hit": hit,
+    }
+    return probs, actual, top_idx, hit, row
+
+
 def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
     """Scores real, already-made predictions against what actually happened —
     distinct from run_backtest's historical simulation. This is the honest
     answer to "how is the model doing right now": no walk-forward replay, just
     every prediction the site genuinely showed before a match, checked
     against the result once it came in.
+
+    `recent` here is a fixed-size preview for the accuracy page, not the full
+    history — see tracked_predictions_page for the paginated version.
     """
     pairs = _latest_pre_kickoff_predictions(session)
     if not pairs:
@@ -153,13 +175,10 @@ def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
     recent = []
 
     for pred, match in pairs:
-        probs = (pred.home_win_prob, pred.draw_prob, pred.away_win_prob)
-        actual = _actual_outcome(match)
+        probs, actual, top_idx, hit, row = _tracked_row(pred, match)
         scoreboard.add(probs, actual)
 
-        top_idx = int(np.argmax(probs))
         top_prob = probs[top_idx]
-        hit = top_idx == actual
         band = min(int(top_prob * 10) * 10, 90)
         bucket = bands.setdefault(band, {"n": 0, "correct": 0, "prob_sum": 0.0})
         bucket["n"] += 1
@@ -167,15 +186,7 @@ def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
         bucket["prob_sum"] += top_prob
 
         if len(recent) < recent_limit:
-            recent.append(
-                {
-                    "match": match,
-                    "predicted_probs": probs,
-                    "predicted_pick": ["home", "draw", "away"][top_idx],
-                    "actual_outcome": ["home", "draw", "away"][actual],
-                    "hit": hit,
-                }
-            )
+            recent.append(row)
 
     calibration_table = [
         {
@@ -192,6 +203,30 @@ def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
         **scoreboard.summary(),
         "calibration_table": calibration_table,
         "recent": recent,
+    }
+
+
+def tracked_predictions_page(session: Session, *, page: int = 1, page_size: int = 25) -> dict:
+    """Full, paginated history of every prediction genuinely tracked before
+    kickoff (see _latest_pre_kickoff_predictions), most recent first. Backs
+    the "all tracked predictions" page — live_tracking_summary's own
+    `recent` list is a small fixed preview, not meant to paginate itself."""
+    pairs = _latest_pre_kickoff_predictions(session)
+    pairs.sort(key=lambda pm: pm[1].utc_kickoff, reverse=True)
+
+    total = len(pairs)
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+    page = min(max(1, page), total_pages)
+    start = (page - 1) * page_size
+
+    rows = [_tracked_row(pred, match)[4] for pred, match in pairs[start : start + page_size]]
+
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
     }
 
 

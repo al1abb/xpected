@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Tracked Predictions · Xpected{% endblock %}
+{% block content %}
+
+<a href="/accuracy" class="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">&larr; Accuracy</a>
+<h1 class="text-2xl font-bold tracking-tight mt-1 mb-1">All tracked predictions</h1>
+<p class="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-2xl">
+  Every prediction the site genuinely showed before a match, checked against what actually happened once the result came in — the full history behind the Live tracking summary on the Accuracy page.
+</p>
+
+{% if not tracked.total %}
+<div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-gray-500">
+  Nothing tracked yet.
+</div>
+{% else %}
+<p class="text-xs text-gray-400 mb-4">{{ tracked.total }} tracked prediction{{ 's' if tracked.total != 1 }} &middot; page {{ tracked.page }} of {{ tracked.total_pages }}</p>
+
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+  {% for r in tracked.rows %}
+  <a href="/match/{{ r.match.id }}" class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+    <span class="w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-bold text-white {{ 'bg-green-600' if r.hit else 'bg-red-500' }}">{{ '✓' if r.hit else '✗' }}</span>
+    <span class="flex-1 truncate text-gray-700 dark:text-gray-300">{{ r.match.home_team.canonical_name }} vs {{ r.match.away_team.canonical_name }}</span>
+    <span class="hidden sm:inline text-gray-400 shrink-0">{{ r.match.utc_kickoff.strftime('%d %b %Y') }}</span>
+    <span class="text-gray-400 capitalize shrink-0">picked {{ r.predicted_pick }}</span>
+    <span class="text-gray-400 shrink-0 w-12 text-right tabular-nums">{{ '%.0f'|format(r.predicted_confidence * 100) }}%</span>
+  </a>
+  {% endfor %}
+</div>
+
+{% if tracked.total_pages > 1 %}
+<div class="flex items-center justify-between mt-4 text-sm">
+  {% if tracked.page > 1 %}
+  <a href="/accuracy/tracked?page={{ tracked.page - 1 }}" class="text-indigo-600 dark:text-indigo-400 hover:underline">&larr; Newer</a>
+  {% else %}<span></span>{% endif %}
+  <span class="text-gray-400">Page {{ tracked.page }} of {{ tracked.total_pages }}</span>
+  {% if tracked.page < tracked.total_pages %}
+  <a href="/accuracy/tracked?page={{ tracked.page + 1 }}" class="text-indigo-600 dark:text-indigo-400 hover:underline">Older &rarr;</a>
+  {% else %}<span></span>{% endif %}
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -102,6 +102,9 @@
       <p class="text-sm text-gray-400 px-4 py-3">Nothing tracked yet.</p>
       {% endfor %}
     </div>
+    {% if live.n > live.recent|length %}
+    <a href="/accuracy/tracked" class="block mt-2 text-xs text-indigo-600 dark:text-indigo-400 hover:underline">View all {{ live.n }} tracked predictions &rarr;</a>
+    {% endif %}
   </div>
 </div>
 {% endif %}

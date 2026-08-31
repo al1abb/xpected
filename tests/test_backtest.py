@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Match, ModelRun, Prediction, Team
-from model.backtest import brier, live_tracking_summary, log_loss, rps
+from model.backtest import brier, live_tracking_summary, log_loss, rps, tracked_predictions_page
 
 
 @pytest.fixture()
@@ -168,3 +168,64 @@ def test_live_tracking_calibration_table_buckets_by_confidence(session):
     assert band["realized_rate"] == pytest.approx(1.0)
     assert result["recent"][0]["hit"] is True
     assert result["recent"][0]["predicted_pick"] == "home"
+
+
+# ---------- tracked_predictions_page ----------
+
+
+def _tracked_match_with_prediction(session, run, comp_id, home_id, away_id, kickoff, home_goals, away_goals):
+    match = _finished_match(comp_id, home_id, away_id, kickoff, home_goals, away_goals)
+    session.add(match)
+    session.flush()
+    session.add(
+        Prediction(
+            match_id=match.id, model_run_id=run.id, home_win_prob=0.6, draw_prob=0.25, away_win_prob=0.15,
+            created_at=kickoff - dt.timedelta(days=1),
+        )
+    )
+    return match
+
+
+def test_tracked_predictions_page_orders_newest_first_and_paginates(session):
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+
+    base = dt.datetime(2026, 1, 1)
+    for i in range(5):
+        _tracked_match_with_prediction(session, run, 1, home.id, away.id, base + dt.timedelta(days=i), 1, 0)
+    session.commit()
+
+    page1 = tracked_predictions_page(session, page=1, page_size=2)
+    assert page1["total"] == 5
+    assert page1["total_pages"] == 3
+    assert len(page1["rows"]) == 2
+    # Newest kickoff (day 4) first.
+    assert page1["rows"][0]["match"].utc_kickoff == base + dt.timedelta(days=4)
+
+    page2 = tracked_predictions_page(session, page=2, page_size=2)
+    assert page2["rows"][0]["match"].utc_kickoff == base + dt.timedelta(days=2)
+
+
+def test_tracked_predictions_page_clamps_out_of_range_page(session):
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+    _tracked_match_with_prediction(session, run, 1, home.id, away.id, dt.datetime(2026, 1, 1), 1, 0)
+    session.commit()
+
+    result = tracked_predictions_page(session, page=99, page_size=25)
+    assert result["page"] == 1
+    assert result["total_pages"] == 1
+    assert len(result["rows"]) == 1
+
+
+def test_tracked_predictions_page_empty(session):
+    result = tracked_predictions_page(session)
+    assert result == {"rows": [], "total": 0, "page": 1, "page_size": 25, "total_pages": 1}

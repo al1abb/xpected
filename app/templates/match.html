@@ -27,9 +27,10 @@
     <div class="shrink-0 px-2 text-center" data-live-container data-status="scheduled" data-match-id="{{ match.id }}" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
       <div data-variant="scheduled" class="text-gray-300 dark:text-gray-600 font-bold text-sm {{ 'hidden' if live_state }}">vs</div>
       <div data-variant="soon" class="{{ 'hidden' if live_state != 'soon' }}">
-        <div class="inline-flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-bold uppercase tracking-wide text-sm" title="Kicks off {{ kickoff_display }}">
-          <span class="h-2 w-2 rounded-full bg-sky-500"></span><span data-soon-relative>Soon</span>
+        <div class="inline-flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-bold uppercase tracking-wide text-sm">
+          <span class="h-2 w-2 rounded-full bg-sky-500"></span>Soon
         </div>
+        <div class="text-xs text-gray-400 dark:text-gray-400 mt-1">{{ kickoff_display }} (<span data-soon-relative>soon</span>)</div>
       </div>
       <div data-variant="live" class="{{ 'hidden' if live_state != 'live' }}">
         <div class="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold uppercase tracking-wide text-sm" title="Estimated from kickoff time: we don't have a real-time score feed" data-live-title>

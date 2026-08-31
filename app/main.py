@@ -942,3 +942,15 @@ def accuracy_page(request: Request):
         return templates.TemplateResponse(request, "accuracy.html", ctx)
     finally:
         session.close()
+
+
+@app.get("/accuracy/tracked", response_class=HTMLResponse)
+def tracked_predictions(request: Request, page: int = 1):
+    session = get_session()
+    try:
+        tracked = backtest.tracked_predictions_page(session, page=page)
+        ctx = _template_context(session, request, tracked=tracked)
+        ctx["current_slug"] = "accuracy"
+        return templates.TemplateResponse(request, "tracked_predictions.html", ctx)
+    finally:
+        session.close()

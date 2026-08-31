@@ -191,12 +191,29 @@
     </nav>
   </header>
 
-  <div id="live-now-strip" class="overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-300 ease-out border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
+  {# Server-rendered open + skeleton by default — not a JS-injected state —
+     so there is no gap between first paint and "loading" being visible; JS
+     only ever replaces this with real content or closes the strip, never
+     has to conjure the loading state itself. Each skeleton pill mirrors the
+     real item's exact box (same border/padding/rounded-lg/gap) so swapping
+     in real content changes only what's inside the box, not the box itself,
+     to avoid a layout jump between loading and loaded. #}
+  {% macro live_now_skeleton_pill() %}
+  <span class="shrink-0 flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs">
+    <span class="hidden sm:inline-block h-3 w-10 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
+    <span class="inline-block h-5 w-5 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
+    <span class="inline-block h-3 w-7 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
+    <span class="inline-block h-3 w-6 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
+    <span class="inline-block h-5 w-5 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
+    <span class="inline-block h-3 w-7 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
+  </span>
+  {% endmacro %}
+  <div id="live-now-strip" class="overflow-hidden max-h-20 opacity-100 transition-[max-height,opacity] duration-300 ease-out border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
     <div class="mx-auto max-w-5xl px-4 py-2 flex items-center gap-3">
       <span class="shrink-0 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-red-600 dark:text-red-400">
         <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live now
       </span>
-      <div id="live-now-items" class="flex items-center gap-2 overflow-x-auto no-scrollbar"></div>
+      <div id="live-now-items" class="flex items-center gap-2 overflow-x-auto no-scrollbar">{{ live_now_skeleton_pill() }}{{ live_now_skeleton_pill() }}</div>
     </div>
   </div>
 
@@ -284,11 +301,13 @@
     // an hour), so real data always outranks the estimate.
     var confirmedLiveIds = {};
     function relativeSoonText(ms) {
-      var mins = Math.round(ms / 60000);
-      if (mins <= 1) return 'Starting now';
-      if (mins < 60) return 'in ' + mins + ' min';
-      var hrs = Math.round(mins / 60);
-      return 'in ' + hrs + (hrs === 1 ? ' hour' : ' hours');
+      var totalMin = Math.round(ms / 60000);
+      if (totalMin <= 1) return 'starting now';
+      if (totalMin < 60) return 'in ' + totalMin + ' min';
+      var hrs = Math.floor(totalMin / 60);
+      var mins = totalMin % 60;
+      if (mins === 0) return 'in ' + hrs + (hrs === 1 ? ' hour' : ' hours');
+      return 'in ' + hrs + 'h ' + mins + 'm';
     }
     function refreshLiveStates() {
       var now = Date.now();
@@ -337,12 +356,6 @@
         : '<span class="flex h-5 w-5 shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white leading-none" style="background-color:' + color + '">' + initials + '</span>';
       return crest + '<span class="font-bold tracking-wide">' + abbrev + '</span>';
     }
-    function liveNowSkeletonHtml() {
-      return '<span class="inline-flex items-center gap-2">'
-        + '<span class="inline-block h-5 w-16 rounded bg-red-200/70 dark:bg-red-900/40 animate-pulse"></span>'
-        + '<span class="inline-block h-5 w-28 rounded bg-red-200/70 dark:bg-red-900/40 animate-pulse"></span>'
-        + '</span>';
-    }
     function openLiveNowStrip() {
       var strip = document.getElementById('live-now-strip');
       if (!strip) return;
@@ -354,12 +367,6 @@
       if (!strip) return;
       strip.classList.remove('max-h-20', 'opacity-100');
       strip.classList.add('max-h-0', 'opacity-0');
-    }
-    function showLiveNowSkeleton() {
-      var container = document.getElementById('live-now-items');
-      if (!container) return;
-      container.innerHTML = liveNowSkeletonHtml();
-      openLiveNowStrip();
     }
     function renderLiveNowStrip(live) {
       var container = document.getElementById('live-now-items');
@@ -376,39 +383,54 @@
       }).join('');
       openLiveNowStrip();
     }
-    // Skeleton shows immediately (before the first fetch resolves) so the
-    // strip never pops from nothing straight to content — see the loading-
-    // UX feedback this responds to. Only the very first check needs it;
-    // subsequent polls already have a definitive state to show.
+    // The skeleton itself is server-rendered (see the strip's markup above) —
+    // never JS-injected — so it's visible from first paint with no gap while
+    // scripts load. On a fast connection /api/live-scores can resolve in
+    // single-digit milliseconds (its own 15s disk cache — see
+    // ingest/live_scores.py — makes most hits near-instant), which would
+    // otherwise swap the skeleton for real content too fast to actually
+    // perceive a loading state at all. Enforce a minimum visible duration on
+    // the first check so it's always seen, regardless of response speed.
+    // Only the very first check needs this; subsequent polls already have a
+    // definitive state on screen and shouldn't introduce artificial delay.
+    var MIN_SKELETON_MS = 500;
     var firstLiveCheck = true;
     function refreshRealLiveScores() {
-      if (firstLiveCheck) { showLiveNowSkeleton(); firstLiveCheck = false; }
+      var deferUntil = 0;
+      if (firstLiveCheck) {
+        deferUntil = Date.now() + MIN_SKELETON_MS;
+        firstLiveCheck = false;
+      }
       fetch('/api/live-scores')
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          renderLiveNowStrip(data.live || []);
-          var matches = data.matches || {};
-          document.querySelectorAll('[data-live-container][data-match-id]').forEach(function (el) {
-            var info = matches[el.dataset.matchId];
-            if (!info) return;
-            confirmedLiveIds[el.dataset.matchId] = true;
-            var scoreText = info.home_goals + '–' + info.away_goals + (info.clock ? ' · ' + info.clock : '');
-            el.querySelectorAll('[data-live-score]').forEach(function (s) { s.textContent = ' ' + scoreText; });
-            var big = el.querySelector('[data-live-score-big]');
-            if (big) {
-              big.textContent = info.home_goals + '–' + info.away_goals;
-              big.classList.remove('hidden');
-            }
-            var caption = el.querySelector('[data-live-caption]');
-            if (caption) caption.textContent = info.clock ? info.clock + ' · live score' : 'live score';
-            var titleEl = el.querySelector('[data-live-title]');
-            if (titleEl) titleEl.removeAttribute('title');
-            // Force the "live" variant on, regardless of what the wall-clock
-            // estimate currently shows (see comment above the function).
-            el.querySelectorAll('[data-variant]').forEach(function (v) {
-              v.classList.toggle('hidden', v.dataset.variant !== 'live');
+          var apply = function () {
+            renderLiveNowStrip(data.live || []);
+            var matches = data.matches || {};
+            document.querySelectorAll('[data-live-container][data-match-id]').forEach(function (el) {
+              var info = matches[el.dataset.matchId];
+              if (!info) return;
+              confirmedLiveIds[el.dataset.matchId] = true;
+              var scoreText = info.home_goals + '–' + info.away_goals + (info.clock ? ' · ' + info.clock : '');
+              el.querySelectorAll('[data-live-score]').forEach(function (s) { s.textContent = ' ' + scoreText; });
+              var big = el.querySelector('[data-live-score-big]');
+              if (big) {
+                big.textContent = info.home_goals + '–' + info.away_goals;
+                big.classList.remove('hidden');
+              }
+              var caption = el.querySelector('[data-live-caption]');
+              if (caption) caption.textContent = info.clock ? info.clock + ' · live score' : 'live score';
+              var titleEl = el.querySelector('[data-live-title]');
+              if (titleEl) titleEl.removeAttribute('title');
+              // Force the "live" variant on, regardless of what the wall-clock
+              // estimate currently shows (see comment above the function).
+              el.querySelectorAll('[data-variant]').forEach(function (v) {
+                v.classList.toggle('hidden', v.dataset.variant !== 'live');
+              });
             });
-          });
+          };
+          var wait = deferUntil - Date.now();
+          if (wait > 0) setTimeout(apply, wait); else apply();
         })
         .catch(function () { closeLiveNowStrip(); });
     }
