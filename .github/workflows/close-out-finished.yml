@@ -1,0 +1,52 @@
+name: Close out finished matches
+
+# Lightweight, frequent companion to daily-refresh.yml: checks
+# football-data.org (fast, already used for live scores) for any of our
+# tracked matches that have actually finished but our DB still shows
+# scheduled — football-data.co.uk and fixturedownload.com (the primary
+# result sources) can lag up to a day before posting a confirmed score.
+# Closes just those rows; no model refit, no full ingest, so it's cheap
+# enough to run every 15 minutes. See scripts/close_out_finished_matches.py.
+#
+# Self-healing by design: if this run's push ever loses a race against
+# daily-refresh.yml (both touch data/app.db), it just fails that one run —
+# the next run 15 minutes later re-checks the same matches and succeeds,
+# since football-data.org still reports them finished. Not worth adding
+# retry/rebase complexity around a binary-file conflict for that.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  close-out:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Close out finished matches
+        env:
+          FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
+        run: python scripts/close_out_finished_matches.py
+
+      - name: Commit and push if anything closed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/app.db
+          if git diff --cached --quiet; then
+            echo "Nothing closed out, skipping commit."
+          else
+            git commit -m "Close out finished matches: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi

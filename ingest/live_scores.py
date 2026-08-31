@@ -8,9 +8,12 @@ those competitions keep the wall-clock "Live" estimate in app/main.py with
 no real score.
 
 Unlike ingest/football_data_org.py (which only ever ingests Champions League
-match rows), this only *reads* the live-matches endpoint — it never creates
-or updates a `Match` row, so it's safe to call from a request-serving route
-with no ingest side effects.
+match rows), fetch_live_matches only *reads* the live-matches endpoint — it
+never creates or updates a `Match` row, so it's safe to call from a
+request-serving route with no ingest side effects. fetch_recently_finished
+below is read-only in the same sense — the actual DB write lives in
+scripts/close_out_finished_matches.py, which is the only place either
+function's output gets persisted.
 
 GET /v4/matches?status=LIVE returns every live match across every
 competition in a single call, so polling this endpoint costs one request
@@ -21,6 +24,7 @@ docstring for why that source was ruled out for this).
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 from app.config import settings
@@ -91,6 +95,64 @@ def fetch_live_matches() -> list[dict]:
                 "away_goals": full_time.get("away"),
                 "minute": match.get("minute"),
                 "status": match.get("status"),  # "IN_PLAY" | "PAUSED"
+            }
+        )
+    return rows
+
+
+def fetch_recently_finished(*, lookback_days: int = 3) -> list[dict]:
+    """Every match football-data.org already confirms FINISHED in the last
+    `lookback_days`, for the same TIER_ONE competitions as fetch_live_matches.
+
+    Backs scripts/close_out_finished_matches.py: football-data.co.uk and
+    fixturedownload.com (our primary result sources — see
+    ingest/footballdata_csv.py, ingest/fixturedownload.py) can lag by up to a
+    day before posting a confirmed final score, even though football-data.org
+    typically has it within minutes of full time (it's the same source that
+    powers the live-score overlay). This lets a frequent, lightweight job
+    close out a match immediately instead of waiting for the next full daily
+    refresh — without needing to track live->finished transitions across
+    runs itself, since re-querying a few days back is cheap and stateless.
+
+    Returns [] on any failure — same fail-soft contract as fetch_live_matches.
+    """
+    if not settings.football_data_org_token:
+        return []
+
+    today = dt.date.today()
+    date_from = today - dt.timedelta(days=lookback_days)
+
+    try:
+        text = fetch_text(
+            f"{BASE}/matches",
+            subdir="live_scores",
+            max_age_hours=_CACHE_SECONDS / 3600,
+            params={"status": "FINISHED", "dateFrom": date_from.isoformat(), "dateTo": today.isoformat()},
+            headers={"X-Auth-Token": settings.football_data_org_token},
+        )
+        raw = json.loads(text)
+    except Exception:
+        return []
+
+    rows = []
+    for match in raw.get("matches", []):
+        slug = FD_ORG_COMPETITION_CODES.get((match.get("competition") or {}).get("code"))
+        if slug is None:
+            continue
+        home_name = (match.get("homeTeam") or {}).get("name")
+        away_name = (match.get("awayTeam") or {}).get("name")
+        if not home_name or not away_name:
+            continue
+        full_time = (match.get("score") or {}).get("fullTime") or {}
+        if full_time.get("home") is None or full_time.get("away") is None:
+            continue
+        rows.append(
+            {
+                "competition_slug": slug,
+                "home_name": home_name,
+                "away_name": away_name,
+                "home_goals": full_time["home"],
+                "away_goals": full_time["away"],
             }
         )
     return rows
