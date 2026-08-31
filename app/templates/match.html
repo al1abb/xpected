@@ -19,12 +19,12 @@
     </a>
 
     {% if match.status == "finished" %}
-    <div class="shrink-0 px-2 min-w-[9rem]">
+    <div class="shrink-0 px-2 w-40">
       <div class="text-3xl sm:text-4xl font-mono font-black tabular-nums">{{ match.home_goals }}–{{ match.away_goals }}</div>
       <div class="text-xs text-gray-400 dark:text-gray-400 mt-1 uppercase tracking-wide">Full time</div>
     </div>
     {% else %}
-    <div class="shrink-0 px-2 min-w-[9rem] text-center" data-live-container data-status="scheduled" data-match-id="{{ match.id }}" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
+    <div class="shrink-0 px-2 w-40 text-center" data-live-container data-status="scheduled" data-match-id="{{ match.id }}" data-kickoff="{{ match.utc_kickoff.isoformat() }}Z">
       <div data-variant="scheduled" class="text-gray-300 dark:text-gray-600 font-bold text-sm {{ 'hidden' if live_state }}">vs</div>
       <div data-variant="soon" class="{{ 'hidden' if live_state != 'soon' }}">
         <div class="inline-flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-bold uppercase tracking-wide text-sm">
@@ -34,7 +34,7 @@
       </div>
       <div data-variant="live" class="{{ 'hidden' if live_state != 'live' }}">
         <div class="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold uppercase tracking-wide text-sm" title="Estimated from kickoff time: we don't have a real-time score feed" data-live-title>
-          <span class="h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>Live
+          <span class="h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>Live<span data-live-minute></span>
         </div>
         <div class="text-3xl sm:text-4xl font-mono font-black tabular-nums" data-live-score-big><span class="inline-block h-8 w-20 rounded bg-gray-200 dark:bg-gray-700 animate-pulse align-middle"></span></div>
         <div class="text-xs text-gray-400 dark:text-gray-400 mt-1" data-live-caption>estimated from kickoff time</div>

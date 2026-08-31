@@ -418,8 +418,20 @@
                 big.textContent = info.home_goals + '–' + info.away_goals;
                 big.classList.remove('hidden');
               }
+              // football-data.org's real per-minute clock has come back null
+              // on every match tested this session — evidently not populated
+              // on our tier — so fall back to a wall-clock estimate from
+              // kickoff, honestly labeled as such (same "estimate, not a
+              // real feed" pattern as the Live badge itself).
+              var minuteEl = el.querySelector('[data-live-minute]');
+              var clockText = info.clock;
+              if (!clockText) {
+                var elapsed = Math.round((Date.now() - new Date(el.dataset.kickoff).getTime()) / 60000);
+                clockText = '~' + Math.max(1, Math.min(90, elapsed)) + "'";
+              }
+              if (minuteEl) minuteEl.textContent = ' · ' + clockText;
               var caption = el.querySelector('[data-live-caption]');
-              if (caption) caption.textContent = info.clock ? info.clock + ' · live score' : 'live score';
+              if (caption) caption.textContent = info.clock ? 'live score' : 'clock is estimated · live score';
               var titleEl = el.querySelector('[data-live-title]');
               if (titleEl) titleEl.removeAttribute('title');
               // Force the "live" variant on, regardless of what the wall-clock
