@@ -507,10 +507,14 @@ def search_teams(request: Request, q: str = "", slot: str | None = None, other: 
 
 
 # football-data.org's live-match window (~6h back covers a match that kicked
-# off hours ago and is still somehow marked IN_PLAY by a source hiccup; ~1h
-# forward is slack for kickoff-time drift between sources).
+# off hours ago and is still somehow marked IN_PLAY by a source hiccup; ~15min
+# forward is slack for ordinary kickoff-time drift between sources — this used
+# to be a full hour to tolerate the football-data.co.uk BST bug, but that's
+# fixed and backfilled now (see scripts/fix_footballdata_timezone.py), and a
+# full hour of forward slack risked force-matching a match that genuinely
+# hadn't kicked off yet to an unrelated live fixture for the same team pair).
 _LIVE_SCORE_LOOKBACK = dt.timedelta(hours=6)
-_LIVE_SCORE_LOOKAHEAD = dt.timedelta(hours=1)
+_LIVE_SCORE_LOOKAHEAD = dt.timedelta(minutes=15)
 
 
 @app.get("/api/live-scores")
@@ -582,6 +586,8 @@ def live_scores():
                     "competition_slug": competition.slug,
                     "home_name": home.canonical_name,
                     "away_name": away.canonical_name,
+                    "home_abbrev": row["home_tla"] or home.canonical_name[:3].upper(),
+                    "away_abbrev": row["away_tla"] or away.canonical_name[:3].upper(),
                     "home_logo": home.logo_url,
                     "away_logo": away.logo_url,
                     "home_color": home_color,

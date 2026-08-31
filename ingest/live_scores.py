@@ -74,8 +74,9 @@ def fetch_live_matches() -> list[dict]:
         slug = FD_ORG_COMPETITION_CODES.get((match.get("competition") or {}).get("code"))
         if slug is None:
             continue
-        home_name = (match.get("homeTeam") or {}).get("name")
-        away_name = (match.get("awayTeam") or {}).get("name")
+        home_team = match.get("homeTeam") or {}
+        away_team = match.get("awayTeam") or {}
+        home_name, away_name = home_team.get("name"), away_team.get("name")
         if not home_name or not away_name:
             continue
         full_time = (match.get("score") or {}).get("fullTime") or {}
@@ -84,6 +85,8 @@ def fetch_live_matches() -> list[dict]:
                 "competition_slug": slug,
                 "home_name": home_name,
                 "away_name": away_name,
+                "home_tla": home_team.get("tla"),
+                "away_tla": away_team.get("tla"),
                 "home_goals": full_time.get("home"),
                 "away_goals": full_time.get("away"),
                 "minute": match.get("minute"),

@@ -6,11 +6,11 @@
     {% if card.match.status == "scheduled" %}
     <span class="shrink-0 pl-2" data-live-container data-status="scheduled" data-match-id="{{ card.match.id }}" data-kickoff="{{ card.match.utc_kickoff.isoformat() }}Z">
       <span data-variant="scheduled" class="font-medium {{ 'hidden' if card.live_state }}">{{ card.kickoff_display }}</span>
-      <span data-variant="soon" class="inline-flex items-center gap-1 font-semibold text-sky-600 dark:text-sky-400 {{ 'hidden' if card.live_state != 'soon' }}" title="Kicks off soon">
-        <span class="h-1.5 w-1.5 rounded-full bg-sky-500"></span>Soon · {{ card.kickoff_display }}
+      <span data-variant="soon" class="inline-flex items-center gap-1 font-semibold text-sky-600 dark:text-sky-400 {{ 'hidden' if card.live_state != 'soon' }}" title="Kicks off {{ card.kickoff_display }}">
+        <span class="h-1.5 w-1.5 rounded-full bg-sky-500"></span><span data-soon-relative>Soon</span>
       </span>
       <span data-variant="live" class="inline-flex items-center gap-1 font-bold uppercase tracking-wide text-red-600 dark:text-red-400 {{ 'hidden' if card.live_state != 'live' }}" title="Estimated from kickoff time: we don't have a real-time score feed" data-live-title>
-        <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live<span data-live-score></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live<span data-live-score><span class="inline-block h-3 w-8 rounded bg-red-200 dark:bg-red-900/50 animate-pulse ml-1 align-middle"></span></span>
       </span>
       <span data-variant="pending" class="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 {{ 'hidden' if card.live_state != 'pending' }}" title="Kickoff has passed but our source hasn't posted a result yet">
         <span>⏳</span>Result pending

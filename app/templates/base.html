@@ -191,7 +191,7 @@
     </nav>
   </header>
 
-  <div id="live-now-strip" class="hidden border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
+  <div id="live-now-strip" class="overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-300 ease-out border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
     <div class="mx-auto max-w-5xl px-4 py-2 flex items-center gap-3">
       <span class="shrink-0 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-red-600 dark:text-red-400">
         <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live now
@@ -283,6 +283,13 @@
     // for a Match row can be wrong (a known duplicate-row case, off by up to
     // an hour), so real data always outranks the estimate.
     var confirmedLiveIds = {};
+    function relativeSoonText(ms) {
+      var mins = Math.round(ms / 60000);
+      if (mins <= 1) return 'Starting now';
+      if (mins < 60) return 'in ' + mins + ' min';
+      var hrs = Math.round(mins / 60);
+      return 'in ' + hrs + (hrs === 1 ? ' hour' : ' hours');
+    }
     function refreshLiveStates() {
       var now = Date.now();
       document.querySelectorAll('[data-live-container]').forEach(function (el) {
@@ -295,11 +302,15 @@
         } else if (kickoff - now <= SOON_WINDOW_MS) {
           state = 'soon';
         }
+        if (state === 'soon') {
+          el.querySelectorAll('[data-soon-relative]').forEach(function (s) { s.textContent = relativeSoonText(kickoff - now); });
+        }
         el.querySelectorAll('[data-variant]').forEach(function (v) {
           v.classList.toggle('hidden', v.dataset.variant !== state);
         });
       });
     }
+    refreshLiveStates();
     setInterval(refreshLiveStates, 30000);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) refreshLiveStates(); });
   </script>
@@ -318,31 +329,60 @@
     // A match this can't resolve (unsupported competition, or
     // football-data.org just doesn't have it) silently keeps today's plain
     // wall-clock badge — no error, just no overlay.
-    function teamChipHtml(name, logo, color) {
+    function teamChipHtml(name, abbrev, logo, color) {
       var initials = (name.split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2)).toUpperCase();
       var fallback = '<span class="hidden h-5 w-5 shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white leading-none" style="background-color:' + color + '">' + initials + '</span>';
-      if (logo) {
-        return '<img src="' + logo + '" alt="" class="h-5 w-5 shrink-0 object-contain" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">' + fallback;
-      }
-      return '<span class="flex h-5 w-5 shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white leading-none" style="background-color:' + color + '">' + initials + '</span>';
+      var crest = logo
+        ? '<img src="' + logo + '" alt="" class="h-5 w-5 shrink-0 object-contain" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">' + fallback
+        : '<span class="flex h-5 w-5 shrink-0 rounded-full items-center justify-center text-[0.6rem] font-bold text-white leading-none" style="background-color:' + color + '">' + initials + '</span>';
+      return crest + '<span class="font-bold tracking-wide">' + abbrev + '</span>';
+    }
+    function liveNowSkeletonHtml() {
+      return '<span class="inline-flex items-center gap-2">'
+        + '<span class="inline-block h-5 w-16 rounded bg-red-200/70 dark:bg-red-900/40 animate-pulse"></span>'
+        + '<span class="inline-block h-5 w-28 rounded bg-red-200/70 dark:bg-red-900/40 animate-pulse"></span>'
+        + '</span>';
+    }
+    function openLiveNowStrip() {
+      var strip = document.getElementById('live-now-strip');
+      if (!strip) return;
+      strip.classList.remove('max-h-0', 'opacity-0');
+      strip.classList.add('max-h-20', 'opacity-100');
+    }
+    function closeLiveNowStrip() {
+      var strip = document.getElementById('live-now-strip');
+      if (!strip) return;
+      strip.classList.remove('max-h-20', 'opacity-100');
+      strip.classList.add('max-h-0', 'opacity-0');
+    }
+    function showLiveNowSkeleton() {
+      var container = document.getElementById('live-now-items');
+      if (!container) return;
+      container.innerHTML = liveNowSkeletonHtml();
+      openLiveNowStrip();
     }
     function renderLiveNowStrip(live) {
-      var strip = document.getElementById('live-now-strip');
       var container = document.getElementById('live-now-items');
-      if (!strip || !container) return;
-      if (!live.length) { strip.classList.add('hidden'); container.innerHTML = ''; return; }
+      if (!container) return;
+      if (!live.length) { closeLiveNowStrip(); container.innerHTML = ''; return; }
       container.innerHTML = live.map(function (m) {
         return '<a href="/match/' + m.id + '" class="shrink-0 flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs hover:border-red-400 dark:hover:border-red-700 transition-colors">'
-          + '<span class="text-gray-400 dark:text-gray-500 font-semibold hidden sm:inline">' + m.competition_name + '</span>'
-          + teamChipHtml(m.home_name, m.home_logo, m.home_color)
+          + '<span class="text-gray-600 dark:text-gray-300 font-bold hidden sm:inline">' + m.competition_name + '</span>'
+          + teamChipHtml(m.home_name, m.home_abbrev, m.home_logo, m.home_color)
           + '<span class="font-mono font-bold">' + m.home_goals + '–' + m.away_goals + '</span>'
-          + teamChipHtml(m.away_name, m.away_logo, m.away_color)
+          + teamChipHtml(m.away_name, m.away_abbrev, m.away_logo, m.away_color)
           + (m.clock ? '<span class="text-red-600 dark:text-red-400 font-bold">' + m.clock + '</span>' : '')
           + '</a>';
       }).join('');
-      strip.classList.remove('hidden');
+      openLiveNowStrip();
     }
+    // Skeleton shows immediately (before the first fetch resolves) so the
+    // strip never pops from nothing straight to content — see the loading-
+    // UX feedback this responds to. Only the very first check needs it;
+    // subsequent polls already have a definitive state to show.
+    var firstLiveCheck = true;
     function refreshRealLiveScores() {
+      if (firstLiveCheck) { showLiveNowSkeleton(); firstLiveCheck = false; }
       fetch('/api/live-scores')
         .then(function (r) { return r.json(); })
         .then(function (data) {
@@ -370,7 +410,7 @@
             });
           });
         })
-        .catch(function () {});
+        .catch(function () { closeLiveNowStrip(); });
     }
     refreshRealLiveScores();
     setInterval(refreshRealLiveScores, 25000);
