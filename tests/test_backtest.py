@@ -228,4 +228,31 @@ def test_tracked_predictions_page_clamps_out_of_range_page(session):
 
 def test_tracked_predictions_page_empty(session):
     result = tracked_predictions_page(session)
-    assert result == {"rows": [], "total": 0, "page": 1, "page_size": 25, "total_pages": 1}
+    assert result == {
+        "rows": [], "total": 0, "correct": 0, "wrong": 0, "page": 1, "page_size": 25, "total_pages": 1,
+    }
+
+
+def test_tracked_predictions_page_counts_correct_and_wrong_across_full_history(session):
+    """correct/wrong must reflect ALL tracked predictions, not just the
+    current page — the page-1 slice below only shows 2 of 3."""
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+
+    base = dt.datetime(2026, 1, 1)
+    # Predicted home (0.6 highest) twice, actual home win both times — hits.
+    _tracked_match_with_prediction(session, run, 1, home.id, away.id, base, 1, 0)
+    _tracked_match_with_prediction(session, run, 1, home.id, away.id, base + dt.timedelta(days=1), 2, 0)
+    # Same prediction (still favors home), but away actually won — a miss.
+    _tracked_match_with_prediction(session, run, 1, home.id, away.id, base + dt.timedelta(days=2), 0, 1)
+    session.commit()
+
+    result = tracked_predictions_page(session, page=1, page_size=2)
+    assert result["total"] == 3
+    assert result["correct"] == 2
+    assert result["wrong"] == 1
+    assert len(result["rows"]) == 2  # page size still limits the visible rows

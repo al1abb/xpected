@@ -13,7 +13,12 @@
   Nothing tracked yet.
 </div>
 {% else %}
-<p class="text-xs text-gray-400 mb-4">{{ tracked.total }} tracked prediction{{ 's' if tracked.total != 1 }} &middot; page {{ tracked.page }} of {{ tracked.total_pages }}</p>
+<p class="text-xs text-gray-400 mb-4">
+  {{ tracked.total }} tracked prediction{{ 's' if tracked.total != 1 }} &middot;
+  <span class="text-green-600 dark:text-green-500 font-semibold">{{ tracked.correct }} right</span> &middot;
+  <span class="text-red-500 font-semibold">{{ tracked.wrong }} wrong</span> &middot;
+  page {{ tracked.page }} of {{ tracked.total_pages }}
+</p>
 
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
   {% for r in tracked.rows %}

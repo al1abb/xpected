@@ -219,11 +219,16 @@ def tracked_predictions_page(session: Session, *, page: int = 1, page_size: int 
     page = min(max(1, page), total_pages)
     start = (page - 1) * page_size
 
-    rows = [_tracked_row(pred, match)[4] for pred, match in pairs[start : start + page_size]]
+    # hit/wrong counted across the FULL history, not just this page — the
+    # page-level `rows` slice below is just what's visible right now.
+    all_rows = [_tracked_row(pred, match)[4] for pred, match in pairs]
+    correct = sum(1 for r in all_rows if r["hit"])
 
     return {
-        "rows": rows,
+        "rows": all_rows[start : start + page_size],
         "total": total,
+        "correct": correct,
+        "wrong": total - correct,
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
