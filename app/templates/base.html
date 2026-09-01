@@ -191,29 +191,19 @@
     </nav>
   </header>
 
-  {# Server-rendered open + skeleton by default — not a JS-injected state —
-     so there is no gap between first paint and "loading" being visible; JS
-     only ever replaces this with real content or closes the strip, never
-     has to conjure the loading state itself. Each skeleton pill mirrors the
-     real item's exact box (same border/padding/rounded-lg/gap) so swapping
-     in real content changes only what's inside the box, not the box itself,
-     to avoid a layout jump between loading and loaded. #}
-  {% macro live_now_skeleton_pill() %}
-  <span class="shrink-0 flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs">
-    <span class="hidden sm:inline-block h-3 w-10 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
-    <span class="inline-block h-5 w-5 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
-    <span class="inline-block h-3 w-7 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
-    <span class="inline-block h-3 w-6 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
-    <span class="inline-block h-5 w-5 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
-    <span class="inline-block h-3 w-7 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></span>
-  </span>
-  {% endmacro %}
-  <div id="live-now-strip" class="overflow-hidden max-h-20 opacity-100 transition-[max-height,opacity] duration-300 ease-out border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
+  {# Starts fully collapsed — no skeleton, no "loading" flash. Showing a
+     loading state before we even know whether any match is live meant the
+     common case (no live matches right now) rendered a strip and then made
+     it vanish a moment later, which read as a bug/shift rather than a
+     loading state. Only opens once /api/live-scores confirms there's
+     something to show, so the only motion a user ever sees is content
+     appearing — never appearing-then-disappearing. #}
+  <div id="live-now-strip" class="overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-300 ease-out border-b border-gray-100 dark:border-gray-900 bg-red-50/60 dark:bg-red-950/20">
     <div class="mx-auto max-w-5xl px-4 py-2 flex items-center gap-3">
       <span class="shrink-0 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wide text-red-600 dark:text-red-400">
         <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>Live now
       </span>
-      <div id="live-now-items" class="flex items-center gap-2 overflow-x-auto no-scrollbar">{{ live_now_skeleton_pill() }}{{ live_now_skeleton_pill() }}</div>
+      <div id="live-now-items" class="flex items-center gap-2 overflow-x-auto no-scrollbar"></div>
     </div>
   </div>
 
@@ -388,11 +378,15 @@
     // scripts load. On a fast connection /api/live-scores can resolve in
     // single-digit milliseconds (its own 15s disk cache — see
     // ingest/live_scores.py — makes most hits near-instant), which would
-    // otherwise swap the skeleton for real content too fast to actually
-    // perceive a loading state at all. Enforce a minimum visible duration on
-    // the first check so it's always seen, regardless of response speed.
-    // Only the very first check needs this; subsequent polls already have a
-    // definitive state on screen and shouldn't introduce artificial delay.
+    // otherwise swap /match's score skeleton for real content too fast to
+    // actually perceive a loading state at all. Enforce a minimum visible
+    // duration on the first check so it's always seen, regardless of
+    // response speed. Only the very first check needs this; subsequent
+    // polls already have a definitive state on screen and shouldn't
+    // introduce artificial delay. The live-now-strip itself needs no such
+    // treatment — it starts collapsed and only ever opens once real data
+    // says there's something to show, so there's no skeleton state on it
+    // to protect.
     var MIN_SKELETON_MS = 500;
     var firstLiveCheck = true;
     function refreshRealLiveScores() {
