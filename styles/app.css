@@ -1,0 +1,9 @@
+/* Tailwind entrypoint. Compiled to public/static/app.css by `npm run build:css`
+   (see package.json); app/templates/base.html links the built file.
+   The custom properties and component styles stay inline in base.html's
+   <style> block — they are hand-written CSS, not Tailwind output, and keeping
+   them there means the theme tokens ship with the HTML rather than depending
+   on a separate file having loaded. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

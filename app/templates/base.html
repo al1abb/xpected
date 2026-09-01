@@ -17,21 +17,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
-          },
-        },
-      },
-    };
-  </script>
-  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  {# Prebuilt stylesheet, not the Tailwind Play CDN. The CDN shipped ~126 KB
+     of gzipped JavaScript that then generated the stylesheet in the browser on
+     every single page load; this is 5.9 KB gzipped of plain CSS with no
+     script, no runtime work, and no flash before styles apply. It also
+     removes a real correctness problem: because the CDN produced its CSS
+     after first paint, anything measuring rendered element heights on load
+     read the wrong value (see measureIntoCssVar's comment).
+
+     Built by `npm run build:css` (tailwind.config.js), pinned to 3.4.17 —
+     the exact version the CDN was serving — and committed, since Vercel's
+     Python runtime does not run npm. Regenerate after adding new utility
+     classes to a template. #}
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
   <style>
     ::-webkit-scrollbar { height: 6px; width: 6px; }
     ::-webkit-scrollbar-thumb { background: rgba(120,120,130,0.35); border-radius: 3px; }

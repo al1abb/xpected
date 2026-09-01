@@ -1,0 +1,12 @@
+{
+  "name": "xpected-css",
+  "private": true,
+  "description": "Build-time only: compiles the Tailwind stylesheet that app/templates/base.html links. The Python app has no Node dependency at runtime.",
+  "scripts": {
+    "build:css": "tailwindcss -i ./styles/app.css -o ./public/static/app.css --minify",
+    "watch:css": "tailwindcss -i ./styles/app.css -o ./public/static/app.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

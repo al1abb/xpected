@@ -11,6 +11,9 @@ data/raw/
 !data/raw/.gitkeep
 .pytest_cache/
 *.egg-info/
+# Build-time only (Tailwind CLI). The COMPILED public/static/app.css is
+# committed, because Vercel's Python runtime never runs npm.
+node_modules/
 .vscode/
 .idea/
 future-plans.md

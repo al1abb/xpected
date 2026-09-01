@@ -1,0 +1,57 @@
+name: CI
+
+# The repo had no test automation until now — the only workflows were the two
+# data jobs, which never run pytest. This runs the suite on every push, and
+# additionally guards a failure mode that is otherwise silent: the Tailwind
+# stylesheet is built at development time and committed (Vercel's Python
+# runtime cannot run npm), so a template that gains a new utility class but
+# ships without a rebuild renders unstyled with nothing failing anywhere.
+# Rebuilding here and diffing catches exactly that.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  css-is-current:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild the stylesheet
+        run: npm run build:css
+
+      - name: Fail if the committed CSS is stale
+        run: |
+          if ! git diff --quiet -- public/static/app.css; then
+            echo "::error::public/static/app.css is out of date with the templates."
+            echo "Run 'npm run build:css' and commit the result, or new utility"
+            echo "classes will silently have no styles in production."
+            git diff --stat -- public/static/app.css
+            exit 1
+          fi
+          echo "Stylesheet is up to date."

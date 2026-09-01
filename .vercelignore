@@ -9,3 +9,10 @@ data/tune_accuracy_results.json
 .vscode/
 .idea/
 future-plans.md
+
+# Node build tooling — only public/static/app.css (already built) is needed.
+node_modules/
+styles/
+package.json
+package-lock.json
+tailwind.config.js
