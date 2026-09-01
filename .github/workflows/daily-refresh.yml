@@ -38,6 +38,14 @@ jobs:
             python scripts/refresh.py
           fi
 
+      # Every refresh writes one prediction per scheduled match (~2,800, since
+      # the scheduled pool runs to the end of the season) and nothing used to
+      # remove the superseded ones — ~1.15 MB/day of unbounded growth, in a
+      # file that is committed on every run. This keeps only what the site and
+      # the accuracy pages actually read; see scripts/prune_predictions.py.
+      - name: Prune superseded predictions
+        run: python scripts/prune_predictions.py
+
       - name: Commit and push if data changed
         run: |
           git config user.name "github-actions[bot]"
