@@ -34,11 +34,22 @@ templates.env.globals["country_flag"] = country_flag
 # CSS block adds a future competition theme; no template fork needed.
 COMPETITION_THEME_CLASS = {"champions-league": "theme-ucl"}
 
-static_dir = BASE_DIR / "app" / "static"
+# Static files live in public/, which Vercel serves straight from its CDN —
+# requests for /static/* are answered at the edge and never reach this
+# function at all. They used to be mounted from app/static/ and therefore
+# served BY the function: every image was a serverless invocation from the
+# function's region, returned with `cache-control: max-age=0` so browsers
+# re-fetched all of it on every page view.
+#
+# This mount still exists because local dev has no CDN in front of it; on
+# Vercel it is simply never reached. Directory is created if missing so a
+# fresh checkout can boot — but only when writable, since Vercel's filesystem
+# is read-only outside /tmp.
+static_dir = BASE_DIR / "public" / "static"
 try:
     static_dir.mkdir(parents=True, exist_ok=True)
 except OSError:
-    pass  # already exists and shipped (Vercel's filesystem is read-only)
+    pass
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 

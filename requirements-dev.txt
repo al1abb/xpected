@@ -1,0 +1,12 @@
+# Local development + test dependencies.
+#
+# Kept out of requirements.txt because that file is what Vercel installs into
+# the serverless function bundle, which has a 250 MB uncompressed limit — the
+# app's real dependencies (scipy, numpy, sqlalchemy) already account for most
+# of it, so anything the deployed app does not import is worth excluding.
+#
+# Install with:  pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+pytest>=8.3
+pillow>=11.0  # used by scripts that resize the static assets in public/
