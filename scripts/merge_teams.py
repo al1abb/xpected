@@ -38,6 +38,32 @@ MERGES: list[tuple[str, str, str | None]] = [
     ("Sporting CP", "Sp Lisbon", "Sporting CP"),
     ("SV 07 Elversberg", "Elversberg", None),
     ("Stade Brestois 29", "Brest", None),
+    # --- 2026-09 batch, found by scripts/find_duplicate_teams.py -------------
+    # All 14 are the same shape: football-data.co.uk had the club under its
+    # short/abbreviated name with years of history, then fixturedownload's
+    # 2026/27 season feed introduced the club's full legal name as a NEW team
+    # carrying the whole season's fixtures. Each pair was confirmed by both
+    # teams' season opener falling on the identical date, and by the league
+    # landing on its real size once merged (e.g. Ligue 1 22 -> 18).
+    # Survivor is the row with more lifetime matches, per this file's
+    # convention; `rename` is used only where the surviving row's name is
+    # genuinely wrong or ambiguous, not merely less formal.
+    ("Santander", "R. Racing Club", "Racing Santander"),
+    ("La Coruna", "RC Deportivo", "Deportivo La Coruna"),  # vs Deportivo Alaves
+    ("Sport-Club Freiburg", "Freiburg", None),
+    ("RC Lens", "Lens", None),
+    ("LOSC Lille", "Lille", None),
+    ("Havre Athletic Club", "Le Havre", None),
+    ("Stade Rennais FC", "Rennes", None),
+    ("Excelsior Rotterdam", "Excelsior", None),
+    ("N.E.C. Nijmegen", "Nijmegen", "NEC Nijmegen"),
+    ("SL Benfica", "Benfica", None),
+    ("Vitória SC", "Guimaraes", "Vitória Guimarães"),
+    ("Academico Viseu", "Académico", "Académico Viseu"),
+    ("Çaykur Rizespor", "Rizespor", None),
+    # "Buyuksehyr" is football-data.co.uk's mangled abbreviation, so the
+    # survivor takes the duplicate's (correct) name here.
+    ("Istanbul Basaksehir", "Buyuksehyr", "Istanbul Basaksehir"),
 ]
 
 
@@ -83,8 +109,17 @@ def _reassign_match_side(session: Session, match: Match, field: str, new_team_id
     if drop.id == match.id:
         _drop_match(session, match)
         return False
-    setattr(keep, field, new_team_id)
+
+    # Order matters: drop the colliding row and flush that delete BEFORE
+    # pointing `keep` at the survivor. Doing it the other way round marks
+    # `keep` dirty first, and _drop_match's very next Query.delete() triggers
+    # an autoflush that pushes the pending UPDATE out while the colliding row
+    # is still present — tripping the matches natural-key unique constraint on
+    # a state that was only ever meant to be transient. (Confirmed: this is
+    # exactly how the 2026-09 merge batch first failed.)
     _drop_match(session, drop)
+    session.flush()
+    setattr(keep, field, new_team_id)
     return True
 
 
