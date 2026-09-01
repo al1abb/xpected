@@ -191,7 +191,7 @@
       </thead>
       <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
         {% for row in standings %}
-        <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40">
+        <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40{{ ' zone-' ~ row.zone if row.zone }}">
           <td class="px-3 py-2 text-right text-[color:var(--comp-muted)]">{{ row.position }}</td>
           <td class="px-3 py-2">
             <a href="/team/{{ row.team.id }}" class="flex items-center gap-2 truncate hover:text-indigo-600 dark:hover:text-indigo-400">
@@ -210,6 +210,25 @@
       </tbody>
     </table>
   </div>
+  {# Only shown when rows were actually banded — a table whose size disagrees
+     with the configured league size renders unbanded, and a legend explaining
+     colours that aren't there would be worse than no legend. #}
+  {% if standings_has_zones %}
+  <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[color:var(--comp-muted)]">
+    {% if standings | selectattr('zone', 'equalto', 'relegation') | list %}
+    <span class="inline-flex items-center gap-1.5">
+      <span class="inline-block h-3 w-1 rounded-sm" style="background-color: var(--zone-relegation-border)"></span>
+      Relegation
+    </span>
+    {% endif %}
+    {% if standings | selectattr('zone', 'equalto', 'playoff') | list %}
+    <span class="inline-flex items-center gap-1.5">
+      <span class="inline-block h-3 w-1 rounded-sm" style="background-color: var(--zone-playoff-border)"></span>
+      Relegation play-off
+    </span>
+    {% endif %}
+  </div>
+  {% endif %}
 </section>
 {% elif standings_empty_reason %}
 <section class="mb-8">

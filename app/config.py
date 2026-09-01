@@ -185,3 +185,61 @@ COMPETITIONS = [
 
 for _c in COMPETITIONS:
     _c.setdefault("neutral_venue", False)
+
+
+# Bottom-of-table zones per domestic league, for the standings banding on
+# /competition/<slug>. Counted from the BOTTOM (position > teams - n), which
+# is what makes this robust: relegation is always defined from the foot of the
+# table, so the rule survives a league changing size.
+#
+# `teams` is a guard, not a layout input. The table is only banded when the
+# computed standings have exactly this many rows; otherwise it renders
+# unbanded. That matters because banding the wrong rows is worse than not
+# banding at all, and this is not hypothetical — before the Sept 2026 team
+# merge, four of these leagues showed 19-22 rows because clubs were split
+# across duplicate Team rows (see scripts/find_duplicate_teams.py), which
+# would have coloured safe mid-table clubs as relegated.
+#
+# `playoff` is the relegation play-off place(s) directly above the automatic
+# drop, where a league has them — shown in amber rather than red because those
+# clubs are not down, they have another game to save themselves.
+#
+# UEFA competitions are deliberately absent: the Champions League league phase
+# has a completely different zone structure (top 8 direct to the R16, 9-24 to a
+# knockout play-off, 25-36 eliminated) and is not a relegation table at all.
+LEAGUE_ZONES: dict[str, dict[str, int]] = {
+    "premier-league": {"teams": 20, "relegation": 3, "playoff": 0},
+    "la-liga": {"teams": 20, "relegation": 3, "playoff": 0},
+    "serie-a": {"teams": 20, "relegation": 3, "playoff": 0},
+    # 16th plays a two-legged play-off against 2. Bundesliga's 3rd.
+    "bundesliga": {"teams": 18, "relegation": 2, "playoff": 1},
+    # 16th plays a play-off against a Ligue 2 side.
+    "ligue-1": {"teams": 18, "relegation": 2, "playoff": 1},
+    # Only 18th goes down automatically; 16th and 17th enter the play-offs.
+    "eredivisie": {"teams": 18, "relegation": 1, "playoff": 2},
+    "primeira-liga": {"teams": 18, "relegation": 2, "playoff": 0},
+    "super-lig": {"teams": 18, "relegation": 3, "playoff": 0},
+    # Small league; format has moved around, so no zones claimed until it can
+    # be confirmed against a real season (its fixtures are also still missing —
+    # see future-plans.md).
+    "azerbaijan-premyer-liqa": {"teams": 0, "relegation": 0, "playoff": 0},
+}
+
+
+def league_zone_for(slug: str, position: int, row_count: int) -> str | None:
+    """'relegation' | 'playoff' | None for a standings row.
+
+    Returns None for any competition without configured zones, and for every
+    row when `row_count` disagrees with the configured team count — see the
+    guard note on LEAGUE_ZONES.
+    """
+    zones = LEAGUE_ZONES.get(slug)
+    if not zones or not zones["teams"] or row_count != zones["teams"]:
+        return None
+    relegation_from = row_count - zones["relegation"]
+    if position > relegation_from:
+        return "relegation"
+    playoff_from = relegation_from - zones["playoff"]
+    if zones["playoff"] and position > playoff_from:
+        return "playoff"
+    return None

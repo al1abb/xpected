@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.badges import competition_logo, competition_short, country_flag
 from app.colors import resolve_match_colors, team_colors
-from app.config import BASE_DIR, settings
+from app.config import BASE_DIR, league_zone_for, settings
 from app.db import SessionLocal, init_db
 from app.models import Competition, EloRating, IngestLog, Match, ModelRun, PlayerStat, Prediction, Team, TeamAlias
 from ingest.football_data_org_aliases import FD_ORG_TO_CANONICAL
@@ -703,6 +703,14 @@ def competition_page(request: Request, slug: str):
                     f"No matches have been played yet in the {current_season_label} season. "
                     "The table will appear once results start coming in."
                 )
+            else:
+                # Tag each row with its relegation/play-off zone, or None. The
+                # row count is passed so league_zone_for can refuse to band a
+                # table whose size disagrees with the real league — colouring
+                # the wrong club as relegated is worse than no colour at all.
+                for row in standings:
+                    row["zone"] = league_zone_for(slug, row["position"], len(standings))
+        standings_has_zones = bool(standings) and any(r.get("zone") for r in standings)
 
         top_scorers = (
             session.query(PlayerStat)
@@ -746,6 +754,7 @@ def competition_page(request: Request, slug: str):
             results_days=results_days,
             standings=standings,
             standings_empty_reason=standings_empty_reason,
+            standings_has_zones=standings_has_zones,
             top_scorers=top_scorers,
             top_assists=top_assists,
             player_stats_season=player_stats_season,

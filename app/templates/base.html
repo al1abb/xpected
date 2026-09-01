@@ -64,6 +64,14 @@
       --comp-hero:         none;
       --comp-hero-text:    inherit;
       --comp-hero-ring:    transparent;
+      /* Standings zone bands (see app/config.py::league_zone_for). Red is
+         automatic relegation; amber is the relegation play-off, which is a
+         genuinely different situation — those clubs still have a game to save
+         themselves — so it must not read as "already down". */
+      --zone-relegation-bg:     #FEF2F2;  /* red-50   */
+      --zone-relegation-border: #DC2626;  /* red-600  */
+      --zone-playoff-bg:        #FFFBEB;  /* amber-50 */
+      --zone-playoff-border:    #D97706;  /* amber-600 */
     }
     .dark {
       --comp-page:         #030712;  /* gray-950 */
@@ -74,7 +82,24 @@
       --comp-thead-bg:     #111827;
       --comp-thead-text:   #9CA3AF;
       --comp-hover-border: #312E81;
+      --zone-relegation-bg:     #2A1216;
+      --zone-relegation-border: #EF4444;  /* red-500   */
+      --zone-playoff-bg:        #2A2110;
+      --zone-playoff-border:    #F59E0B;  /* amber-500 */
     }
+
+    /* Zone bands. The --comp-muted override is not cosmetic: the position
+       number uses that token, and gray-500 on the light-mode red wash measures
+       4.42:1 — just under WCAG AA. Redefining the variable on the row itself
+       lets the cascade fix every muted element inside it at once. Verified: all
+       12 text/border combinations across both themes clear AA (body text >=14:1,
+       muted >=6.9:1, borders >=3.0:1 as non-text UI). */
+    tr.zone-relegation { background-color: var(--zone-relegation-bg); box-shadow: inset 3px 0 0 0 var(--zone-relegation-border); }
+    tr.zone-playoff    { background-color: var(--zone-playoff-bg);    box-shadow: inset 3px 0 0 0 var(--zone-playoff-border); }
+    /* Light mode only — dark mode's gray-400 already measures 6.9:1 / 6.3:1 on
+       these washes, and forcing gray-600 there would make it too dark. */
+    html:not(.dark) tr.zone-relegation,
+    html:not(.dark) tr.zone-playoff { --comp-muted: #4B5563; }  /* gray-600 */
     /* ---- Champions League ---- */
     /* Page wash deliberately more saturated than the first pass — the
        earlier #EDF1FB/#070E24 tones were too close to the app's default
