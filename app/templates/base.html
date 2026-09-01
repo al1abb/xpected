@@ -40,7 +40,16 @@
     summary::-webkit-details-marker { display: none; }
 
     /* ---- layout metrics ---- */
-    :root { --header-h: 6.25rem; --rail-h: 3.5rem; }
+    /* --header-h and --rail-real-h are overwritten with real measured heights
+       by measureIntoCssVar (see the script at the end of <body>); these are
+       only the values used for the instant before that runs, so they should
+       be close to reality rather than round numbers. Header is a 3.5rem chrome
+       row + the ~1.6rem competition strip + 0.5rem padding + a hairline
+       border. --rail-h is the rail's inner track height, which the rail's own
+       box then extends by its top and bottom borders — that 2px difference is
+       precisely what used to make every anchor jump land ~10px low, so
+       consumers should prefer the measured --rail-real-h. */
+    :root { --header-h: 5.7rem; --rail-h: 3.5rem; }
 
     /* ---- per-competition theme tokens (defaults = today's indigo look) ---- */
     :root {
@@ -222,15 +231,33 @@
   </footer>
 
   <script>
-    // Keeps sticky day-headers (competition.html's date-rail) pinned exactly
-    // below this header, whatever its real rendered height is.
+    // Publishes an element's real rendered height into a CSS variable, and
+    // keeps it correct afterwards. Anchor jumps on the competition page offset
+    // themselves by these values (scroll-margin-top), so a stale number puts
+    // every jump off by exactly its error.
+    //
+    // Measuring once on load is not enough, which is how that bug got in:
+    // at first run Tailwind's Play CDN has not finished generating its
+    // stylesheet and Inter has not swapped in, so a content-height-driven
+    // element (the header's second row is chips with text) measures wrong and
+    // then keeps that wrong value forever, since only `resize` re-ran it.
+    // ResizeObserver catches every later change — font swap, late CSS, the
+    // live-now strip expanding, a wrapped row — without needing to enumerate
+    // the causes. getBoundingClientRect is used over offsetHeight because it
+    // reports sub-pixel height and includes borders.
     (function () {
-      function setHeaderHeight() {
-        var header = document.getElementById('site-header');
-        if (header) document.documentElement.style.setProperty('--header-h', header.offsetHeight + 'px');
-      }
-      setHeaderHeight();
-      window.addEventListener('resize', setHeaderHeight);
+      var root = document.documentElement;
+      window.measureIntoCssVar = function (el, varName) {
+        if (!el) return;
+        var apply = function () {
+          root.style.setProperty(varName, el.getBoundingClientRect().height + 'px');
+        };
+        apply();
+        if (window.ResizeObserver) new ResizeObserver(apply).observe(el);
+        else window.addEventListener('resize', apply);
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(apply);
+      };
+      window.measureIntoCssVar(document.getElementById('site-header'), '--header-h');
     })();
   </script>
   <script>

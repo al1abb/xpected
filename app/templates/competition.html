@@ -48,7 +48,7 @@
   <!-- ============ STICKY MATCHDAY RAIL ============ -->
   <div id="date-rail"
        class="sticky z-20 -mx-4 mb-6 border-y border-gray-200 dark:border-gray-800 bg-[color:var(--comp-page)] px-4"
-       style="top: var(--header-h, 6.25rem);">
+       style="top: var(--header-h);">
     <div class="flex h-[var(--rail-h)] items-center gap-2">
 
       <div class="relative min-w-0 flex-1">
@@ -91,7 +91,7 @@
                 class="hidden absolute right-0.5 top-1/2 -translate-y-1/2 z-10 h-6 w-6 inline-flex items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 shadow dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">›</button>
       </div>
 
-      <a href="#{{ days[0].anchor }}"
+      <a href="#{{ days[0].anchor }}" data-rail-chip="{{ days[0].anchor }}"
          class="shrink-0 rounded-lg border border-[color:var(--comp-accent)] px-2.5 py-1 text-[0.7rem] font-bold uppercase tracking-wide text-[color:var(--comp-accent)] hover:bg-[color:var(--comp-accent-soft)]">
         {{ 'Today' if days[0].is_today else 'Next' }}
       </a>
@@ -111,11 +111,15 @@
   </div>
 
   {% for day in m.days %}
+  {# --rail-real-h is the rail's measured outer height; --rail-h is only its
+     inner track and excludes the border-y, so falling back to it lands the
+     jump ~2px under the rail. Both offsets use the same expression so the
+     pinned summary and the anchor target agree. #}
   <details id="{{ day.anchor }}" data-day {% if day.open %}open{% endif %}
            class="group mb-5"
-           style="scroll-margin-top: calc(var(--header-h, 6.25rem) + var(--rail-h) + 0.75rem);">
+           style="scroll-margin-top: calc(var(--header-h) + var(--rail-real-h, var(--rail-h)) + 0.75rem);">
     <summary class="sticky z-[5] -mx-1 flex cursor-pointer list-none items-center gap-3 rounded-lg bg-[color:var(--comp-page)] px-1 py-2"
-             style="top: calc(var(--header-h, 6.25rem) + var(--rail-h));">
+             style="top: calc(var(--header-h) + var(--rail-real-h, var(--rail-h)));">
       <span class="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-xl border font-mono leading-none
                    {{ 'border-transparent bg-[color:var(--comp-accent)] text-[color:var(--comp-accent-on)] shadow-sm'
                       if day.is_today else
@@ -321,12 +325,55 @@
   var track = document.getElementById('rail-track');
   if (!track) return;
 
+  // Publish the rail's REAL outer height (--rail-h is only the inner track and
+  // omits its border-y). Day sections offset their anchors by this, so a 2px
+  // error here is a 2px error on every jump. See base.html's measureIntoCssVar.
+  if (window.measureIntoCssVar) {
+    window.measureIntoCssVar(document.getElementById('date-rail'), '--rail-real-h');
+  }
+
   wireScrollStrip('rail-track', 'rail-left', 'rail-right', 'rail-fade-l', 'rail-fade-r');
 
+  // Jumping to a day is done here rather than left to the browser's native
+  // hash navigation, for three reasons the native behaviour can't cover:
+  //
+  //  1. The target <details> may be collapsed. Native navigation scrolls to
+  //     wherever it currently sits, and the section then expands underneath
+  //     the final position. Opening it BEFORE scrolling makes the offset real.
+  //  2. Content above the target can grow after the browser has already
+  //     positioned the scroll — the autoOpen observer below expands nearby
+  //     sections, and base.html's live-now strip expands once /api/live-scores
+  //     resolves. Re-running the scroll on the next frame re-corrects for
+  //     whatever moved.
+  //  3. Clicking the chip for the day you're already on produced no hashchange
+  //     and therefore did nothing, so a user who had drifted off-position had
+  //     no way to re-centre. Handling click directly makes a re-click work.
+  function jumpToDay(id, smooth) {
+    var target = document.getElementById(id);
+    if (!target) return;
+    if (target.tagName === 'DETAILS') target.open = true;
+    var scroll = function () {
+      target.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+    };
+    requestAnimationFrame(scroll);
+  }
+
+  document.querySelectorAll('[data-rail-chip]').forEach(function (chip) {
+    chip.addEventListener('click', function (e) {
+      var id = chip.dataset.railChip;
+      if (!document.getElementById(id)) return; // let the browser try
+      e.preventDefault();
+      if (window.history && history.replaceState) history.replaceState(null, '', '#' + id);
+      jumpToDay(id, true);
+    });
+  });
+
+  // Deep links (and the browser back/forward buttons) still arrive as plain
+  // hash changes; route them through the same path so they get the same
+  // open-then-scroll treatment.
   function openTarget() {
     if (!location.hash) return;
-    var el = document.querySelector(location.hash);
-    if (el && el.tagName === 'DETAILS') el.open = true;
+    jumpToDay(location.hash.slice(1), false);
   }
   window.addEventListener('hashchange', openTarget);
   openTarget();
