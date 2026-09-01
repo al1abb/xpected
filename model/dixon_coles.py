@@ -25,8 +25,14 @@ import datetime as dt
 import math
 
 import numpy as np
-from scipy.optimize import minimize
-from scipy.stats import poisson
+
+# scipy is imported lazily inside fit_league (the only thing here that needs
+# it) rather than at module scope. `tau` below is pure numpy and is on the web
+# request path via model.predict.score_matrix, so importing this module must
+# stay cheap: scipy.optimize + scipy.stats cost ~2.3s, which every serverless
+# cold start was paying to reach a fitting routine no web request ever calls.
+# Same pattern as model/predict.py's own deferred `from scipy.stats import
+# poisson`.
 
 
 # Tuned against our own walk-forward backtest (scripts/tune_accuracy.py) over
@@ -75,6 +81,9 @@ def fit_league(matches: list[dict], as_of: dt.datetime, xi_per_day: float = XI_P
     1990s English football, not ours — scripts/tune_decay.py sweeps this
     against our own walk-forward backtest to find a better one (see the plan
     for why this is worth doing before adding any new data source)."""
+    from scipy.optimize import minimize
+    from scipy.stats import poisson
+
     team_ids = sorted({m["home_team_id"] for m in matches} | {m["away_team_id"] for m in matches})
     idx = {tid: i for i, tid in enumerate(team_ids)}
     n = len(team_ids)

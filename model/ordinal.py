@@ -20,7 +20,9 @@ Outcome codes match model.backtest._actual_outcome: 0=home, 1=draw, 2=away.
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import minimize
+
+# scipy imported lazily in fit() — see model/dixon_coles.py for why: this
+# module is pulled in transitively by the web app, but only fitting needs scipy.
 
 OUTCOME_HOME, OUTCOME_DRAW, OUTCOME_AWAY = 0, 1, 2
 MIN_ROWS_TO_FIT = 50
@@ -55,6 +57,8 @@ def fit(rows: list[dict]) -> OrdinalFit | None:
     "outcome": 0|1|2}, ...]. Returns None below MIN_ROWS_TO_FIT — a caller
     should fall back to Dixon-Coles/Elo-bridge alone in that case, same as
     every other thin-data fallback in this codebase."""
+    from scipy.optimize import minimize
+
     if len(rows) < MIN_ROWS_TO_FIT:
         return None
 

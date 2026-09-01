@@ -18,7 +18,9 @@ predictions toward uniform); T < 1 means underconfident; T == 1 is a no-op.
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import minimize_scalar
+
+# scipy imported lazily in fit_temperature — see model/dixon_coles.py for why:
+# apply_temperature is on the web request path, fitting is not.
 
 Probs = tuple[float, float, float]
 
@@ -50,6 +52,8 @@ def fit_temperature(records: list[dict]) -> float:
     """records: [{"probs": (h, d, a), "actual": 0|1|2}, ...] — the
     "raw_predictions" list from model.backtest.run_backtest(...,
     collect_predictions=True). Returns the log-loss-minimising temperature."""
+    from scipy.optimize import minimize_scalar
+
     if not records:
         return 1.0
     result = minimize_scalar(lambda t: _mean_log_loss(t, records), bounds=(0.2, 5.0), method="bounded")

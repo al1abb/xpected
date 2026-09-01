@@ -39,13 +39,20 @@ import datetime as dt
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.models import Competition, Match
+from app.models import Competition, EloRating, Match
 from ingest import clubelo
 from ingest.seasons import current_season_start_year
 
 BASE_RATING = 1500.0
 K_BASE = 20.0
 HOME_ADVANTAGE = 100.0
+
+# `elo_ratings.source` values. 'clubelo' rows are written by
+# ingest/clubelo.py and hold ClubElo's raw published numbers; 'internal' rows
+# are the *blended* output of compute_ratings below — our replayed ratings
+# after anchoring — which is what the site actually displays.
+SOURCE_INTERNAL = "internal"
+SOURCE_CLUBELO = clubelo.SOURCE
 
 # Below this many teams paired in both our data and ClubElo for a given
 # domestic league, an affine fit is too noisy to trust — fall back to the
@@ -223,6 +230,64 @@ def compute_ratings(
         return internal
     team_league = _team_primary_league(session, as_of)
     return _anchor_to_clubelo(internal, clubelo_ratings, team_league)
+
+
+def persist_ratings(session: Session, ratings: dict[int, float], *, as_of: dt.date | None = None) -> int:
+    """Store `ratings` (compute_ratings' blended output) as `elo_ratings` rows
+    with source='internal', so readers can look them up instead of recomputing.
+
+    Called from the offline refresh, never from a web request. compute_ratings
+    costs 8-12s and makes a live ClubElo HTTP call, which is fine in a GitHub
+    Actions run but not inside a serverless request (where /tmp/raw starts
+    empty, so the fetch can never be cache-warm, and a slow ClubElo can exceed
+    the function's whole time budget). Persisting here is what lets
+    app/main.py answer team/compare pages with a plain SELECT.
+
+    Idempotent per day: `elo_ratings` is unique on
+    (team_id, as_of_date, source), so re-running a refresh updates in place.
+    """
+    as_of = as_of or dt.date.today()
+    existing = {
+        row.team_id: row
+        for row in session.query(EloRating).filter_by(as_of_date=as_of, source=SOURCE_INTERNAL).all()
+    }
+    for team_id, elo_value in ratings.items():
+        row = existing.get(team_id)
+        if row is None:
+            session.add(EloRating(team_id=team_id, as_of_date=as_of, elo=elo_value, source=SOURCE_INTERNAL))
+        else:
+            row.elo = elo_value
+    session.commit()
+    return len(ratings)
+
+
+def load_persisted_ratings(session: Session) -> dict[int, float]:
+    """{team_id: rating} from the most recent persisted rating per team.
+
+    Prefers source='internal' (compute_ratings' blended, cross-league-anchored
+    output — what persist_ratings writes). Falls back per-team to the raw
+    'clubelo' rows, which ingest/clubelo.py has always written: for any club
+    ClubElo covers, the anchored rating IS its ClubElo rating (see
+    _anchor_to_clubelo), so that fallback is the same number rather than an
+    approximation. Teams in neither are simply absent, and callers default
+    them to BASE_RATING exactly as they do for compute_ratings' output.
+
+    Returns {} on a database that has never been refreshed, which callers must
+    tolerate — it degrades to every team at BASE_RATING, not an error.
+    """
+    ratings: dict[int, float] = {}
+    for source in (SOURCE_CLUBELO, SOURCE_INTERNAL):
+        # Ascending date so a later snapshot overwrites an earlier one, and
+        # 'internal' is applied second so it wins over the clubelo fallback.
+        rows = (
+            session.query(EloRating.team_id, EloRating.elo)
+            .filter(EloRating.source == source)
+            .order_by(EloRating.as_of_date.asc())
+            .all()
+        )
+        for team_id, elo_value in rows:
+            ratings[team_id] = elo_value
+    return ratings
 
 
 def match_count_by_team(session: Session, *, as_of: dt.datetime | None = None) -> dict[int, int]:

@@ -19,7 +19,7 @@ from ingest.resolve import normalize
 from ingest.seasons import current_season_start_year
 from model import backtest, league_strength
 from model.backtest import devigged_market_probs
-from model.elo import BASE_RATING, compute_ratings
+from model.elo import BASE_RATING, load_persisted_ratings
 from model.predict import score_matrix, summarize_matrix
 from model.standings import compute_standings
 
@@ -44,18 +44,15 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 @app.on_event("startup")
 def on_startup() -> None:
+    # Deliberately does no warming. An earlier version pre-computed the Elo
+    # ratings here, which made sense for a long-lived local server but is
+    # backwards on serverless: instances are ephemeral and every close-out
+    # commit redeploys, so that 8-12s computation (plus a live ClubElo fetch
+    # that can never be cache-warm on a fresh instance) was being paid on
+    # *every* cold start, before the first byte of the first page. Ratings are
+    # now precomputed offline by scripts/refresh.py and read with a SELECT —
+    # see _cached_ratings — so there is nothing left worth warming.
     init_db()
-    # Warm the Elo-ratings cache at boot rather than on the first real
-    # request — compute_ratings() is the one genuinely slow call in this app
-    # (~8-12s: a full match replay plus ~185,000 fuzzy ClubElo name-match
-    # comparisons), and paying that cost once here means every team-page
-    # hit is fast from the very first one, not just the second-onward.
-    session = SessionLocal()
-    try:
-        _cached_ratings(session)
-        _cached_elo_calibration(session)
-    finally:
-        session.close()
 
 
 def get_session() -> Session:
@@ -76,14 +73,21 @@ def _latest_model_run(session: Session) -> ModelRun | None:
     return session.query(ModelRun).order_by(ModelRun.id.desc()).first()
 
 
-# team_page is the only route that calls compute_ratings() live — it's not
-# cheap: a full replay of every finished match plus a ClubElo name-resolution
-# pass that runs ~185,000 fuzzy string comparisons, measured at 8-12s, with
-# no caching anywhere in the ingest layer. Ratings only meaningfully change
-# a few times a day (new results, a fresh ClubElo snapshot), so a simple
-# process-lifetime cache with a 1-hour TTL turns "every request is slow"
-# into "the first request per hour is slow." A precomputed-ratings table
-# would be the thorough fix — see future-plans.md.
+# Elo ratings are READ here, never computed. model.elo.compute_ratings() costs
+# 8-12s (a full replay of every finished match plus a ClubElo name-resolution
+# pass of ~185,000 fuzzy string comparisons) *and* makes a live ClubElo HTTP
+# request. That is fine in the offline refresh, which has no time limit and a
+# warm disk cache; it is actively harmful in a serverless request, where every
+# cold start begins with an empty /tmp/raw — so the fetch can never hit cache —
+# and a slow ClubElo can burn the function's entire time budget before a single
+# byte is served. scripts/refresh.py now persists the blended ratings via
+# model.elo.persist_ratings, so this is a plain SELECT.
+#
+# The TTL below is only a memo to avoid re-querying on every request; it is no
+# longer protecting an expensive computation. Ratings are therefore as fresh as
+# the last refresh (~24h) rather than ~1h — Elo moves negligibly in a day, and
+# in practice the old cache rarely survived that long anyway, since every
+# close-out commit redeploys and discards all warm instances.
 _RATINGS_CACHE: dict = {"computed_at": None, "ratings": {}}
 _RATINGS_CACHE_TTL = dt.timedelta(hours=1)
 
@@ -92,7 +96,7 @@ def _cached_ratings(session: Session) -> dict[int, float]:
     now = dt.datetime.utcnow()
     computed_at = _RATINGS_CACHE["computed_at"]
     if computed_at is None or now - computed_at > _RATINGS_CACHE_TTL:
-        _RATINGS_CACHE["ratings"] = compute_ratings(session)
+        _RATINGS_CACHE["ratings"] = load_persisted_ratings(session)
         _RATINGS_CACHE["computed_at"] = now
     return _RATINGS_CACHE["ratings"]
 

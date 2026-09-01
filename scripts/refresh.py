@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import BASE_DIR
 from app.db import SessionLocal, init_db
 from ingest.sync import run_api_sync, run_current_season_fixture_sync, run_free_sync
+from model.elo import compute_ratings, persist_ratings
 from model.predict import generate_predictions
 
 
@@ -53,6 +54,16 @@ def main() -> None:
     try:
         count = generate_predictions(session, notes="scheduled refresh via scripts/refresh.py")
         print(f"--- predictions regenerated: {count} ---")
+
+        # Persist the blended Elo ratings so the web app can read them instead
+        # of recomputing. compute_ratings costs 8-12s and makes a live ClubElo
+        # request — acceptable here, unacceptable inside a serverless request
+        # (see app/main.py::_cached_ratings). Doing it after ingest means the
+        # stored ratings reflect the results pulled in above.
+        _step(
+            "persist Elo ratings for the web app",
+            lambda: f"{persist_ratings(session, compute_ratings(session))} team ratings stored",
+        )
     finally:
         session.close()
 
