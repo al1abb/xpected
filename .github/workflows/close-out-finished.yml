@@ -13,9 +13,18 @@ name: Close out finished matches
 # the next run 15 minutes later re-checks the same matches and succeeds,
 # since football-data.org still reports them finished. Not worth adding
 # retry/rebase complexity around a binary-file conflict for that.
+#
+# Windowed to 11:00-23:00 UTC deliberately. Vercel is git-linked, so every
+# commit here triggers a full production redeploy — at */15 around the clock
+# that was ~96 deploys/day against Hobby's 100/day limit, and each redeploy
+# discards every warm instance, so the site was permanently cold-starting.
+# European fixtures kick off roughly 11:30-21:00 UTC and finish by ~23:00, so
+# the hours outside this window could only ever redeploy without closing out
+# anything. Live scores come from football-data.org at request time and are
+# unaffected by this schedule; only the durable "mark it finished" write waits.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/15 11-23 * * *"
   workflow_dispatch: {}
 
 permissions:

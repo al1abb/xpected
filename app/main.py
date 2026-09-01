@@ -41,16 +41,18 @@ COMPETITION_THEME_CLASS = {"champions-league": "theme-ucl"}
 # function's region, returned with `cache-control: max-age=0` so browsers
 # re-fetched all of it on every page view.
 #
-# This mount still exists because local dev has no CDN in front of it; on
-# Vercel it is simply never reached. Directory is created if missing so a
-# fresh checkout can boot — but only when writable, since Vercel's filesystem
-# is read-only outside /tmp.
+# This mount exists only for local dev, which has no CDN in front of it.
+#
+# It is mounted CONDITIONALLY, and that is load-bearing: vercel.json excludes
+# public/** from the function bundle (the CDN serves those files, so shipping
+# them inside the function too is pure weight). StaticFiles validates its
+# directory at construction and raises RuntimeError when it is missing, which
+# on Vercel happens at import time and takes down every route with
+# FUNCTION_INVOCATION_FAILED — not just /static. Guarding the mount keeps the
+# app importable wherever the directory legitimately isn't present.
 static_dir = BASE_DIR / "public" / "static"
-try:
-    static_dir.mkdir(parents=True, exist_ok=True)
-except OSError:
-    pass
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+if static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 @app.on_event("startup")
