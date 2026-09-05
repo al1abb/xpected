@@ -44,13 +44,28 @@
   {% endif %}
 </div>
 
-<p class="text-sm mb-8 flex items-center gap-1.5">
+<p class="text-sm mb-3 flex items-center gap-1.5">
   {% if result.beats_home_advantage_baseline %}
   <span class="text-green-600">✅</span> The model beats the naive home-advantage baseline on RPS.
   {% else %}
   <span class="text-amber-600">⚠</span> The model is not currently beating the naive baseline, so treat predictions with caution.
   {% endif %}
 </p>
+
+{% if result.draw_stats and result.draw_stats.n %}
+<p class="text-xs text-gray-400 mb-8 max-w-2xl">
+  Accuracy above only counts the single top pick, so a draw almost never wins it —
+  even bookmakers make the draw the favourite in only
+  {{ '%.2f'|format(result.draw_stats.market_favours_draw_rate * 100) }}% of matches, and draws are still
+  {{ '%.1f'|format(result.draw_stats.actual_draw_rate * 100) }}% of real results.
+  That puts the practical ceiling on top-pick accuracy at
+  {{ '%.0f'|format(result.draw_stats.decidable_ceiling * 100) }}%, not 100% — on that basis the model
+  is right {{ '%.0f'|format(result.draw_stats.model_decidable_accuracy * 100) }}% of the time vs
+  {{ '%.0f'|format(result.draw_stats.market_decidable_accuracy * 100) }}% for the market.
+  Every prediction still carries a real draw probability — RPS (above) is the metric that actually
+  uses it; top-pick accuracy just can't reward it.
+</p>
+{% endif %}
 
 <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">By competition, best to worst RPS</h2>
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
@@ -78,13 +93,14 @@
   No predictions have both been made ahead of kickoff and seen their match finish yet. Check back once some of the upcoming fixtures have been played.
 </div>
 {% else %}
-<p class="text-xs text-gray-400 mb-5">
+<p class="text-xs text-gray-400 mb-1">
   Tracked {{ live.n }} prediction{{ 's' if live.n != 1 }} ·
   <span class="text-green-600 dark:text-green-500 font-semibold">{{ live.correct }} right</span> ·
   <span class="text-red-500 font-semibold">{{ live.wrong }} wrong</span> ·
-  {{ '%.1f'|format(live.accuracy * 100) }}% top-pick accuracy · RPS {{ '%.3f'|format(live.rps) }}
+  {{ '%.1f'|format(live.accuracy * 100) }}% top-pick accuracy
+  <span class="text-gray-400">(95% range {{ '%.0f'|format(live.ci_low * 100) }}–{{ '%.0f'|format(live.ci_high * 100) }}%)</span>
+  · RPS {{ '%.3f'|format(live.rps) }}
 </p>
-
 <div class="grid sm:grid-cols-2 gap-6 mb-8">
   <div>
     <h3 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">Calibration: is confidence earned?</h3>

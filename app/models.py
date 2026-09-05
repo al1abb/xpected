@@ -19,12 +19,14 @@ import datetime as dt
 from sqlalchemy import (
     JSON,
     Boolean,
+    Column,
     Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
 )
@@ -258,6 +260,95 @@ class PlayerStat(Base):
     synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     team: Mapped[Team | None] = relationship()
+
+
+class SquadPlayer(Base):
+    """Current squad list — name/position/DOB/nationality only, no per-match
+    stats (see model/form.py's docstring for why per-player form isn't
+    built). Synced via ingest/football_data_org_players.py, which only
+    covers football-data.org's free TIER_ONE competitions; teams outside
+    those get no rows here, handled as an explicit empty state in the UI
+    rather than a blank panel."""
+
+    __tablename__ = "squad_players"
+    __table_args__ = (UniqueConstraint("team_id", "fd_person_id", name="uq_squad_player_team_person"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    name: Mapped[str] = mapped_column(String(128))
+    position: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    date_of_birth: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    nationality: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fd_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    team: Mapped[Team] = relationship()
+
+
+news_item_teams = Table(
+    "news_item_teams",
+    Base.metadata,
+    Column("news_item_id", ForeignKey("news_items.id"), primary_key=True),
+    Column("team_id", ForeignKey("teams.id"), primary_key=True),
+)
+
+
+class NewsItem(Base):
+    """Third-party football headlines, ingested from RSS (see ingest/news.py)
+    — never fetched live on a request, same rule ClubElo moved off the
+    request path for. `competition_id` is set directly for items pulled from
+    a competition-scoped feed (app/config.py's NEWS_FEEDS); `teams` is
+    populated by matching team names in the headline text, which works for
+    any feed including the general ones. An item can have both, neither, or
+    just one — the match/team pages read whichever applies."""
+
+    __tablename__ = "news_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url: Mapped[str] = mapped_column(String(512), unique=True)
+    title: Mapped[str] = mapped_column(String(512))
+    source: Mapped[str] = mapped_column(String(32))  # 'bbc' | 'guardian' | 'espn' | '90min'
+    competition_id: Mapped[int | None] = mapped_column(ForeignKey("competitions.id"), nullable=True)
+    published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    competition: Mapped[Competition | None] = relationship()
+    teams: Mapped[list[Team]] = relationship(secondary=news_item_teams)
+
+
+class LiveMatchState(Base):
+    """Our own observed pause ledger for the in-play clock, used only when
+    football-data.org's real per-minute field is null (confirmed always
+    null on the free tier — see app/main.py's live_scores docstring). Keyed
+    by our own Match.id (stable and collision-free, unlike team names,
+    which repeat across seasons).
+
+    A match's real playing time is elapsed-since-kickoff minus however long
+    it's actually been paused — and PAUSED isn't only half-time; weather,
+    medical stoppages and the like also freeze the real clock and would
+    otherwise inflate a naive elapsed-time estimate by however long they
+    lasted (confirmed happening: a match ran its projected minute well past
+    90+20 while genuinely finishing on time, most likely from an
+    unobserved mid-match stoppage — see app/main.py::_resolve_live_clock).
+    So every PAUSED->IN_PLAY transition we observe adds to
+    `total_paused_minutes`, not just the first one. This only captures
+    pauses that happen while something is actually polling
+    /api/live-scores; a pause nobody polls during is invisible to us and
+    contributes no correction, same limitation as football-data.org itself
+    not giving us a real per-minute feed. Rows are pruned once stale (see
+    _prune_live_match_state in app/main.py) so this never grows unbounded;
+    on Vercel the table lives in the per-cold-start /tmp copy (see
+    app/db.py), so losing it on a fresh cold start just means one match
+    falls back to the wall-clock estimate until we observe it ourselves
+    again — never a hard failure."""
+
+    __tablename__ = "live_match_state"
+
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
+    last_status: Mapped[str] = mapped_column(String(16))  # "IN_PLAY" | "PAUSED"
+    paused_since: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    total_paused_minutes: Mapped[float] = mapped_column(Float, default=0.0)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime)
 
 
 class ApiBudget(Base):

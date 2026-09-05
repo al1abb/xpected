@@ -1,7 +1,18 @@
 """Occasional sync of top scorers/assists for every competition — one
 API-Football request per league per category (~24 requests total across all
 competitions today), well inside the daily cap. Not part of the regular
-fixture-refresh loop; re-run weekly or whenever the tables look stale."""
+fixture-refresh loop; re-run weekly or whenever the tables look stale.
+
+SUPERSEDED for the 8 competitions ingest/football_data_org_players.py covers
+(Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Eredivisie, Primeira
+Liga, Champions League) — that source gets the real current season, this one
+is walled off at 2024/25 (see _OLDEST_ALLOWED_SEASON_FALLBACK below) and now
+runs automatically in scripts/refresh.py. Running this script manually will
+overwrite those 8 competitions' current-season tables with stale 2024/25
+data. Only still useful for Süper Lig / Azerbaijan Premyer Liqa, and even
+there it can only ever reach 2024/25, never the current season — neither
+source has a current-season feed for those two.
+"""
 
 import sys
 from pathlib import Path

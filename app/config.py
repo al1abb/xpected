@@ -243,3 +243,62 @@ def league_zone_for(slug: str, position: int, row_count: int) -> str | None:
     if zones["playoff"] and position > playoff_from:
         return "playoff"
     return None
+
+
+# Football news feeds, ingested (never fetched live — see ingest/news.py and
+# NewsItem's docstring). Every entry here was hand-verified returning current,
+# genuinely distinct items in the Sept 2026 research pass behind this feature.
+#
+# Dead ends deliberately NOT included, so they aren't re-tried later:
+# Goal.com (404), UEFA's own feed (connection failed), Guardian "europaleague"
+# and BBC "european-football" (both 404), Sky Sports' /sports.xml (general
+# Sky News sport — returned Formula 1 content, not football).
+#
+# Coverage gap: no dedicated feed exists for Eredivisie, Primeira Liga,
+# Süper Lig, Azerbaijan Premyer Liqa, Europa League or Conference League —
+# those competitions only get items via team-name matching against the
+# general feeds below, which will surface far fewer. The UI shows an
+# explicit empty state for a competition page with zero items, not a blank
+# panel silently passed off as "no news".
+NEWS_FEEDS = [
+    # General backbone — every item goes through team-name matching only.
+    {"url": "https://feeds.bbci.co.uk/sport/football/rss.xml", "source": "bbc", "competition_slug": None},
+    {"url": "https://www.theguardian.com/football/rss", "source": "guardian", "competition_slug": None},
+    {"url": "https://www.espn.com/espn/rss/soccer/news", "source": "espn", "competition_slug": None},
+    {"url": "https://www.90min.com/posts.rss", "source": "90min", "competition_slug": None},
+    # Competition-scoped — every item is tagged with its competition directly,
+    # independent of whether a team name is detected in the headline.
+    {
+        "url": "https://www.theguardian.com/football/premierleague/rss",
+        "source": "guardian",
+        "competition_slug": "premier-league",
+    },
+    {
+        "url": "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
+        "source": "bbc",
+        "competition_slug": "premier-league",
+    },
+    {"url": "https://www.theguardian.com/football/laligafootball/rss", "source": "guardian", "competition_slug": "la-liga"},
+    {"url": "https://www.theguardian.com/football/serieafootball/rss", "source": "guardian", "competition_slug": "serie-a"},
+    {
+        "url": "https://www.theguardian.com/football/bundesligafootball/rss",
+        "source": "guardian",
+        "competition_slug": "bundesliga",
+    },
+    {"url": "https://www.theguardian.com/football/ligue1football/rss", "source": "guardian", "competition_slug": "ligue-1"},
+    {
+        "url": "https://www.theguardian.com/football/championsleague/rss",
+        "source": "guardian",
+        "competition_slug": "champions-league",
+    },
+    {
+        "url": "https://feeds.bbci.co.uk/sport/football/champions-league/rss.xml",
+        "source": "bbc",
+        "competition_slug": "champions-league",
+    },
+]
+
+# How long a news item stays visible before scripts/refresh.py prunes it —
+# bounds growth the same way predictions were bounded last round, since this
+# table would otherwise accumulate roughly 250-300 items/day forever.
+NEWS_RETENTION_DAYS = 14

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_badge.html" import competition_badge, team_badge %}
+{% from "_news.html" import news_list %}
 {% block title %}{{ competition.name }} · Xpected{% endblock %}
 {% block content %}
 
@@ -315,6 +316,15 @@
 <p class="text-sm text-gray-500 dark:text-gray-400">Nothing to show here for this competition.</p>
 {% endif %}
 
+<section class="mb-8">
+  <h2 class="text-lg font-bold mb-3">News</h2>
+  {% if news_has_dedicated_feed %}
+    {{ news_list(news, "No recent news from this competition's feed yet.") }}
+  {% else %}
+    {{ news_list(news, "No dedicated news feed for this competition — showing only items where a team name was detected in a general headline, which will be rare.") }}
+  {% endif %}
+</section>
+
 </div>
 
 {% endblock %}
@@ -353,28 +363,106 @@
 
   wireScrollStrip('rail-track', 'rail-left', 'rail-right', 'rail-fade-l', 'rail-fade-r');
 
+  // Auto-open collapsed day sections well before the user actually scrolls
+  // to them (600px look-ahead in both directions) — no manual click ever
+  // needed. Each section stops being observed once opened, since there's
+  // nothing left to do for it.
+  //
+  // Declared BEFORE jumpToDay (rather than after, as before) because jumpToDay
+  // needs to reach into it — see the note there on why.
+  var autoOpen = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      e.target.open = true;
+      autoOpen.unobserve(e.target);
+    });
+  }, { rootMargin: '600px 0px 600px 0px' });
+  document.querySelectorAll('details[data-day]:not([open])').forEach(function (d) { autoOpen.observe(d); });
+
   // Jumping to a day is done here rather than left to the browser's native
-  // hash navigation, for three reasons the native behaviour can't cover:
+  // hash navigation, for reasons the native behaviour can't cover:
   //
   //  1. The target <details> may be collapsed. Native navigation scrolls to
   //     wherever it currently sits, and the section then expands underneath
   //     the final position. Opening it BEFORE scrolling makes the offset real.
-  //  2. Content above the target can grow after the browser has already
-  //     positioned the scroll — the autoOpen observer below expands nearby
-  //     sections, and base.html's live-now strip expands once /api/live-scores
-  //     resolves. Re-running the scroll on the next frame re-corrects for
-  //     whatever moved.
+  //  2. Sections ABOVE the target can still be collapsed too. The autoOpen
+  //     observer above expands them as they scroll into its 600px look-ahead
+  //     — which, for a smooth scroll, is WHILE the scroll is still animating.
+  //     Each one that expands grows the page above the target and pushes it
+  //     further down than where the browser already committed to stop,
+  //     landing short — exactly the "press it a few times to get there" bug.
+  //     Fixed at the source: open every day section above the target (and
+  //     unobserve it, so autoOpen can't re-expand it mid-flight) BEFORE
+  //     scrolling, so nothing above the target can grow once the scroll
+  //     starts. Sections below the target don't affect its offset, so they
+  //     are left alone rather than force-opening the whole season.
   //  3. Clicking the chip for the day you're already on produced no hashchange
   //     and therefore did nothing, so a user who had drifted off-position had
   //     no way to re-centre. Handling click directly makes a re-click work.
+  //  4. base.html's live-now strip can also still be expanding (once
+  //     /api/live-scores resolves) when a jump happens right after page load.
+  //     The settle check below re-corrects for that too, once, rather than
+  //     racing it with a fixed-timing re-run.
+  function openSectionsAbove(target) {
+    var days = document.querySelectorAll('details[data-day]');
+    for (var i = 0; i < days.length; i++) {
+      if (days[i] === target) break;
+      if (!days[i].open) {
+        days[i].open = true;
+        autoOpen.unobserve(days[i]);
+      }
+    }
+  }
+
   function jumpToDay(id, smooth) {
     var target = document.getElementById(id);
     if (!target) return;
-    if (target.tagName === 'DETAILS') target.open = true;
+    if (target.tagName === 'DETAILS') {
+      openSectionsAbove(target);
+      target.open = true;
+    }
     var scroll = function () {
       target.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
     };
     requestAnimationFrame(scroll);
+
+    // Safety net: once the scroll has genuinely settled, check the target
+    // landed where its own scroll-margin-top says it should, and correct
+    // ONCE if not (covers the live-now strip resolving mid-jump, or anything
+    // else moving after the checks above).
+    //
+    // Race a `scrollend` listener against a timeout rather than relying on
+    // `scrollend` alone: if the target was already in position (e.g.
+    // re-clicking the chip for the day you're already on), scrollIntoView
+    // triggers no actual scroll and `scrollend` never fires — the listener
+    // would stay armed, and the user's NEXT, unrelated manual scroll would
+    // fire it instead, snapping the page back to this stale target. Whichever
+    // path runs first tears down the other.
+    var settled = false;
+    var correct = function () {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('scrollend', correct);
+      var wanted = parseFloat(getComputedStyle(target).scrollMarginTop) || 0;
+      var actual = target.getBoundingClientRect().top;
+      if (Math.abs(actual - wanted) > 2) {
+        target.scrollIntoView({ behavior: 'auto', block: 'start' });
+      }
+    };
+    // Verified against a real long page (Champions League's ~16-section
+    // season): a smooth scrollIntoView covering ~14,000px genuinely takes
+    // ~1.6s for the browser to finish and fire `scrollend`. A short fallback
+    // timeout firing before that isn't just "a bit early" — calling
+    // scrollIntoView again while the original smooth animation is still
+    // mid-flight fights it, and the two together land somewhere else
+    // entirely (measured overshoot: hundreds of px past the target). So
+    // where `scrollend` is supported, the timeout is a rare backstop only
+    // (mainly for the "already in position, no scroll happens, scrollend
+    // never fires" case) and must stay well clear of realistic scroll
+    // durations. Only browsers without `scrollend` fall back to guessing.
+    var supportsScrollend = 'onscrollend' in window;
+    if (supportsScrollend) window.addEventListener('scrollend', correct);
+    setTimeout(correct, supportsScrollend ? 3000 : (smooth ? 600 : 60));
   }
 
   document.querySelectorAll('[data-rail-chip]').forEach(function (chip) {
@@ -416,19 +504,6 @@
     });
   }, { rootMargin: '-35% 0px -60% 0px' });
   document.querySelectorAll('details[data-day]').forEach(function (d) { io.observe(d); });
-
-  // Auto-open collapsed day sections well before the user actually scrolls
-  // to them (600px look-ahead in both directions) — no manual click ever
-  // needed. Each section stops being observed once opened, since there's
-  // nothing left to do for it.
-  var autoOpen = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) {
-      if (!e.isIntersecting) return;
-      e.target.open = true;
-      autoOpen.unobserve(e.target);
-    });
-  }, { rootMargin: '600px 0px 600px 0px' });
-  document.querySelectorAll('details[data-day]:not([open])').forEach(function (d) { autoOpen.observe(d); });
 
   var btn = document.getElementById('rail-expand');
   btn && btn.addEventListener('click', function () {

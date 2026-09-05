@@ -49,6 +49,21 @@ def log_loss(probs: tuple[float, float, float], actual: int) -> float:
     return -math.log(p)
 
 
+def wilson_interval(correct: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% (default z) Wilson score interval on a hit rate — a small-sample
+    confidence interval that doesn't break down near 0%/100% or at small n the
+    way a naive normal-approximation interval does. Used to show how much a
+    top-pick accuracy figure should be trusted at its current sample size,
+    rather than presenting it as a single settled number."""
+    if n == 0:
+        return (0.0, 0.0)
+    phat = correct / n
+    denom = 1 + z * z / n
+    center = (phat + z * z / (2 * n)) / denom
+    half = z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
 def _home_advantage_baseline(session: Session, cutoff: dt.datetime) -> tuple[float, float, float]:
     """Empirical home/draw/away frequency from everything before `cutoff` —
     the naive baseline the model must beat."""
@@ -175,12 +190,20 @@ def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
     # docstring on why calibration, not hit-rate, is the real target).
     bands: dict[int, dict] = {}
     recent = []
+    top_prob_sum = 0.0
+    draw_actual = 0
+    draw_hits = 0
 
     for pred, match in pairs:
         probs, actual, top_idx, hit, row = _tracked_row(pred, match)
         scoreboard.add(probs, actual)
+        if actual == OUTCOME_DRAW:
+            draw_actual += 1
+            if hit:
+                draw_hits += 1
 
         top_prob = probs[top_idx]
+        top_prob_sum += top_prob
         band = min(int(top_prob * 10) * 10, 90)
         bucket = bands.setdefault(band, {"n": 0, "correct": 0, "prob_sum": 0.0})
         bucket["n"] += 1
@@ -201,10 +224,38 @@ def live_tracking_summary(session: Session, *, recent_limit: int = 20) -> dict:
         for band, b in sorted(bands.items())
     ]
 
+    n = scoreboard.n
+    ci_low, ci_high = wilson_interval(scoreboard.correct_top_pick, n)
+    # A draw is picked as the top choice so rarely (probability mass usually
+    # splits between home/away, peaking the draw around ~30%) that a draw is
+    # effectively never the single most-likely outcome — so the realistic
+    # ceiling on top-pick accuracy is "matches that weren't actually a draw",
+    # not 100%. See model/backtest.py-adjacent research notes / the accuracy
+    # page copy for the market-side evidence (bookmakers favour the draw in
+    # well under 1% of matches too — this isn't a model weakness).
+    #
+    # decidable_accuracy must also drop any correctly-picked draws from the
+    # NUMERATOR, not just every draw from the denominator — keeping a draw
+    # hit on top while removing all draws below it is unbounded above 100%
+    # (a model doing well on non-draws that also gets a lucky draw pick would
+    # print >100% on the one page whose entire point is honesty about the
+    # numbers). Excluding draw hits from both sides answers the clean
+    # question: "of the matches that weren't a draw, how often were we right".
+    non_draw_matches = n - draw_actual
+    decidable_ceiling = non_draw_matches / n if n else 0.0
+
     return {
         **scoreboard.summary(),
         "calibration_table": calibration_table,
         "recent": recent,
+        "expected_accuracy": top_prob_sum / n if n else 0.0,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "draw_actual": draw_actual,
+        "decidable_ceiling": decidable_ceiling,
+        "decidable_accuracy": (
+            (scoreboard.correct_top_pick - draw_hits) / non_draw_matches if non_draw_matches else 0.0
+        ),
     }
 
 
@@ -265,6 +316,17 @@ def run_backtest(
     model_by_competition: dict[str, Scoreboard] = {}
     market_matches_scored = 0
     raw_predictions: list[dict] = []
+    # Draw-ceiling bookkeeping (see wilson_interval's docstring / the accuracy
+    # page copy): a draw is picked as the single most-likely outcome so rarely
+    # that top-pick accuracy has a real ceiling well under 100%, driven by how
+    # often matches actually end in a draw — not by any weakness in the model.
+    # Tracked here, in the same walk-forward loop, so the figure is computed
+    # on exactly the matches actually scored, at zero extra passes over the data.
+    actual_draws = 0
+    model_favours_draw = 0
+    model_favours_draw_hit = 0
+    market_favours_draw = 0
+    market_favours_draw_hit = 0
 
     slug_by_competition_id = {c.id: c.slug for c in session.query(Competition).all()}
 
@@ -295,11 +357,17 @@ def run_backtest(
 
         for match in period_matches:
             actual = _actual_outcome(match)
+            if actual == OUTCOME_DRAW:
+                actual_draws += 1
 
             summary = predictor.predict_match(match)
             model_probs = (summary["home_win_prob"], summary["draw_prob"], summary["away_win_prob"])
             model_overall.add(model_probs, actual)
             home_adv_overall.add(home_adv_probs, actual)
+            if int(np.argmax(model_probs)) == OUTCOME_DRAW:
+                model_favours_draw += 1
+                if actual == OUTCOME_DRAW:
+                    model_favours_draw_hit += 1
 
             slug = slug_by_competition_id.get(match.competition_id, "unknown")
             model_by_competition.setdefault(slug, Scoreboard()).add(model_probs, actual)
@@ -311,6 +379,49 @@ def run_backtest(
             if market_probs is not None:
                 market_overall.add(market_probs, actual)
                 market_matches_scored += 1
+                if int(np.argmax(market_probs)) == OUTCOME_DRAW:
+                    market_favours_draw += 1
+                    if actual == OUTCOME_DRAW:
+                        market_favours_draw_hit += 1
+
+    # Ceiling on top-pick accuracy: since a draw is (by both the model and the
+    # market) almost never the single most-likely outcome, no top-pick metric
+    # can exceed "the share of matches that weren't actually a draw". Rescaling
+    # accuracy by that ceiling gives a fairer read of how good the ranking is
+    # on the matches it could plausibly get right by picking a side at all.
+    #
+    # Both decidable-accuracy figures below also drop any correctly-picked
+    # draws from the NUMERATOR, not just every draw from the denominator —
+    # keeping a draw hit on top while removing all draws below it is
+    # unbounded above 100% (a model doing well on non-draws that also lands
+    # a lucky draw pick would print >100%, on the one page whose entire
+    # point is honesty about the numbers). Market uses the same overall
+    # non-draw share as its denominator (a close approximation, since the
+    # market covers ~93% of all matches at a near-identical draw rate) since
+    # actual draws aren't tracked separately within just the market-scored
+    # subset.
+    non_draw_matches = model_overall.n - actual_draws
+    decidable_ceiling = non_draw_matches / model_overall.n if model_overall.n else 0.0
+    market_non_draw_matches = market_matches_scored * decidable_ceiling
+    draw_stats = {
+        "n": model_overall.n,
+        "actual_draws": actual_draws,
+        "actual_draw_rate": actual_draws / model_overall.n if model_overall.n else 0.0,
+        "model_favours_draw": model_favours_draw,
+        "model_favours_draw_rate": model_favours_draw / model_overall.n if model_overall.n else 0.0,
+        "market_favours_draw": market_favours_draw,
+        "market_favours_draw_rate": market_favours_draw / market_matches_scored if market_matches_scored else 0.0,
+        "market_favours_draw_hit": market_favours_draw_hit,
+        "decidable_ceiling": decidable_ceiling,
+        "model_decidable_accuracy": (
+            (model_overall.correct_top_pick - model_favours_draw_hit) / non_draw_matches if non_draw_matches else 0.0
+        ),
+        "market_decidable_accuracy": (
+            (market_overall.correct_top_pick - market_favours_draw_hit) / market_non_draw_matches
+            if market_non_draw_matches
+            else 0.0
+        ),
+    }
 
     result = {
         "evaluated_from": start.isoformat(),
@@ -324,6 +435,7 @@ def run_backtest(
             and home_adv_overall.n > 0
             and model_overall.rps_sum / model_overall.n < home_adv_overall.rps_sum / home_adv_overall.n
         ),
+        "draw_stats": draw_stats,
     }
     if collect_predictions:
         result["raw_predictions"] = raw_predictions

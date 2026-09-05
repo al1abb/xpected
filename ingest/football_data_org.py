@@ -178,7 +178,12 @@ CREST_COMPETITION_CODES = {
 }
 
 
-def _resolve_crest_team(session: Session, name: str, *, context: str, pool: dict) -> Team | None:
+def resolve_team(session: Session, name: str, *, context: str, pool: dict) -> Team | None:
+    """Resolve a football-data.org team name to our Team row — resolve-only,
+    never creates. Shared by crest sync and ingest/football_data_org_players.py
+    (squad + scorer sync), since all three hit team names from the same API
+    under the same full-legal-name conventions ("FC Internazionale Milano").
+    See sync_team_crests's docstring for why resolve-only matters here."""
     canonical = FD_ORG_TO_CANONICAL.get(name)
     if canonical is not None:
         team = session.query(Team).filter_by(canonical_name=canonical).one_or_none()
@@ -238,7 +243,7 @@ def sync_team_crests(session: Session) -> int:
             name = team_data.get("name")
             if not crest or not name:
                 continue
-            team = _resolve_crest_team(session, name, context=f"crest sync {slug}", pool=pool)
+            team = resolve_team(session, name, context=f"crest sync {slug}", pool=pool)
             if team is not None and team.logo_url is None:
                 team.logo_url = crest
                 updated += 1

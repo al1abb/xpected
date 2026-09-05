@@ -1,11 +1,15 @@
 {% extends "base.html" %}
-{% from "_badge.html" import team_badge %}
+{% from "_badge.html" import team_badge, form_grade_badge %}
+{% from "_news.html" import news_list %}
 {% block title %}{{ team.canonical_name }} · Xpected{% endblock %}
 {% block content %}
 <div class="flex items-center gap-3 mb-1">
   {{ team_badge(team.canonical_name, team.logo_url, team.primary_color, 12) }}
   <div class="min-w-0">
-    <h1 class="text-2xl font-bold tracking-tight">{{ team.canonical_name }}</h1>
+    <h1 class="flex items-center gap-2 text-2xl font-bold tracking-tight">
+      {{ team.canonical_name }}
+      {{ form_grade_badge(team_form_grade) }}
+    </h1>
     <p class="text-sm text-gray-500 dark:text-gray-400">{{ team.country or "" }} · Elo rating <span class="font-semibold text-gray-700 dark:text-gray-300">{{ '%.0f'|format(elo_rating) }}</span></p>
   </div>
   <a href="/compare?a={{ team.id }}" class="ml-auto shrink-0 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm font-medium text-gray-600 hover:border-indigo-300 hover:text-indigo-600 dark:text-gray-300 dark:hover:text-indigo-400">
@@ -22,7 +26,13 @@
   {% endfor %}
 </div>
 
-<h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">Recent Results</h2>
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-1">Recent Results</h2>
+{% if team_form_grade %}
+<p class="text-xs text-gray-400 mb-3 max-w-md">
+  Form grade is relative to this team's own season average, not a general rating. It's shown for
+  context — the model already accounts for recent form on its own, so this isn't an extra input.
+</p>
+{% endif %}
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-2">
   {% for f in recent_form %}
   <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
@@ -35,4 +45,33 @@
   <p class="text-sm text-gray-400 px-3 py-2">No results yet.</p>
   {% endfor %}
 </div>
+
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mt-8 mb-3">Squad</h2>
+{% if squad %}
+<div class="grid gap-4 sm:grid-cols-2">
+  {% for group in squad %}
+  <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-2">
+    <h3 class="px-3 pt-2 pb-1 text-xs font-bold uppercase tracking-wide text-[color:var(--comp-muted)]">{{ group.position }}</h3>
+    {% for p in group.players %}
+    <div class="flex items-center gap-2 px-3 py-1.5 text-sm">
+      <span class="flex-1 truncate text-gray-700 dark:text-gray-300">{{ p.name }}</span>
+      {% if p.nationality %}
+      <span class="shrink-0 text-xs text-gray-400 dark:text-gray-400">{{ p.nationality }}</span>
+      {% endif %}
+      {% if p.date_of_birth %}
+      <span class="shrink-0 text-xs text-gray-400 dark:text-gray-400 w-8 text-right">{{ p.date_of_birth.year }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-gray-500">
+  Squad data isn't available for this team from our free data source yet.
+</div>
+{% endif %}
+
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mt-8 mb-3">News</h2>
+{{ news_list(news, "No recent news mentioning this team in our sources.") }}
 {% endblock %}

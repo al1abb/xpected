@@ -10,9 +10,22 @@ from sqlalchemy.orm import Session
 
 from app.badges import competition_logo, competition_short, country_flag
 from app.colors import resolve_match_colors, team_colors
-from app.config import BASE_DIR, league_zone_for, settings
+from app.config import BASE_DIR, NEWS_FEEDS, league_zone_for, settings
 from app.db import SessionLocal, init_db
-from app.models import Competition, EloRating, IngestLog, Match, ModelRun, PlayerStat, Prediction, Team, TeamAlias
+from app.models import (
+    Competition,
+    EloRating,
+    IngestLog,
+    LiveMatchState,
+    Match,
+    ModelRun,
+    NewsItem,
+    PlayerStat,
+    Prediction,
+    SquadPlayer,
+    Team,
+    TeamAlias,
+)
 from ingest.football_data_org_aliases import FD_ORG_TO_CANONICAL
 from ingest.live_scores import fetch_live_matches
 from ingest.resolve import normalize
@@ -20,6 +33,7 @@ from ingest.seasons import current_season_start_year
 from model import backtest, league_strength
 from model.backtest import devigged_market_probs
 from model.elo import BASE_RATING, load_persisted_ratings
+from model.form import form_grade
 from model.predict import score_matrix, summarize_matrix
 from model.standings import compute_standings
 
@@ -428,6 +442,93 @@ def _head_to_head_tally(session: Session, team_a: int, team_b: int) -> dict:
     return {"a_wins": a_wins, "b_wins": b_wins, "draws": draws, "total": len(matches)}
 
 
+# football-data.org's own bucket labels for `squad[].position` — used only to
+# order the groups sensibly; anything else it ever returns still displays,
+# just sorted alphabetically after these four.
+_POSITION_ORDER = ["Goalkeeper", "Defence", "Midfield", "Offence"]
+
+
+def _squad_by_position(session: Session, team_id: int) -> list[dict]:
+    """This team's squad (ingest/football_data_org_players.py), grouped into
+    position sections in a sensible on-pitch order. Empty for any team whose
+    competition isn't on football-data.org's free tier, or not yet synced —
+    the template renders an explicit empty state for that, never a blank
+    panel passed off as "no squad exists"."""
+    players = (
+        session.query(SquadPlayer).filter_by(team_id=team_id).order_by(SquadPlayer.name).all()
+    )
+    groups: dict[str, list[SquadPlayer]] = {}
+    for p in players:
+        groups.setdefault(p.position or "Other", []).append(p)
+
+    def _sort_key(position: str) -> tuple[int, str]:
+        try:
+            return (_POSITION_ORDER.index(position), "")
+        except ValueError:
+            return (len(_POSITION_ORDER), position)
+
+    return [
+        {"position": position, "players": groups[position]}
+        for position in sorted(groups, key=_sort_key)
+    ]
+
+
+_NEWS_RECENCY = func.coalesce(NewsItem.published_at, NewsItem.fetched_at)
+
+
+def _news_for_teams(session: Session, team_ids: list[int], *, limit: int = 8) -> list[NewsItem]:
+    """Recent news mentioning any of `team_ids` — see ingest/news.py's
+    docstring for how the match is made. Ordered by the article's own
+    published date where the feed provided one, else by when we fetched it."""
+    if not team_ids:
+        return []
+    return (
+        session.query(NewsItem)
+        .join(NewsItem.teams)
+        .filter(Team.id.in_(team_ids))
+        .order_by(_NEWS_RECENCY.desc())
+        .limit(limit)
+        .distinct()
+        .all()
+    )
+
+
+def _news_for_competition(
+    session: Session, competition_id: int, *, season_start: dt.datetime, limit: int = 8
+) -> list[NewsItem]:
+    """Items from that competition's own scoped feed (app.config.NEWS_FEEDS),
+    UNIONED with items mentioning any team that's played in this competition
+    this season — so a competition with no dedicated feed (see
+    NEWS_FEEDS' coverage gap) still surfaces real, relevant items via team
+    matching, rather than being empty by construction. Deduplicated and
+    re-sorted by recency across both sources."""
+    team_ids = {
+        row[0]
+        for row in session.query(Match.home_team_id)
+        .filter(Match.competition_id == competition_id, Match.utc_kickoff >= season_start)
+        .union(
+            session.query(Match.away_team_id).filter(
+                Match.competition_id == competition_id, Match.utc_kickoff >= season_start
+            )
+        )
+        .all()
+    }
+
+    conditions = [NewsItem.competition_id == competition_id]
+    if team_ids:
+        conditions.append(Team.id.in_(team_ids))
+
+    return (
+        session.query(NewsItem)
+        .outerjoin(NewsItem.teams)
+        .filter(or_(*conditions))
+        .order_by(_NEWS_RECENCY.desc())
+        .distinct()
+        .limit(limit)
+        .all()
+    )
+
+
 def _template_context(session: Session, request: Request, **extra) -> dict:
     uefa, leagues = _nav_competitions(session)
     freshness, warning = _data_freshness(session)
@@ -533,6 +634,83 @@ def search_teams(request: Request, q: str = "", slot: str | None = None, other: 
 _LIVE_SCORE_LOOKBACK = dt.timedelta(hours=6)
 _LIVE_SCORE_LOOKAHEAD = dt.timedelta(minutes=15)
 
+# A live match never runs anywhere near this long, so any LiveMatchState row
+# older than this is either a finished match we stopped polling (normal) or
+# a leftover from an earlier meeting between the same two teams that never
+# got cleaned up — either way, safe to drop.
+_LIVE_STATE_STALE_AFTER = dt.timedelta(hours=4)
+
+
+def _prune_live_match_state(session: Session, now: dt.datetime) -> None:
+    session.query(LiveMatchState).filter(LiveMatchState.updated_at < now - _LIVE_STATE_STALE_AFTER).delete()
+
+
+def _resolve_live_clock(
+    session: Session, match_id: int, status: str, minute: int | None, kickoff: dt.datetime, now: dt.datetime
+) -> tuple[str | None, bool]:
+    """(clock text, is_estimated). Real minute if the source gives us one
+    (never observed non-null on our free tier, but honour it if that ever
+    changes — see fetch_live_matches' docstring). Otherwise: real playing
+    time is elapsed-since-kickoff minus however long we've actually seen
+    this match sit PAUSED — accumulated across every pause we observe, not
+    just the first (half-time isn't the only thing that freezes the real
+    clock; weather/medical/VAR stoppages do too, and each one this app
+    doesn't see coming would otherwise inflate the estimate by its full
+    duration). Until we've observed at least one pause for this match
+    ourselves (e.g. the app only started polling once already mid-second-
+    half), fall back to assuming one ~15min half-time gap once elapsed is
+    past a plausible first half. Past ESTIMATED_MATCH_DURATION since
+    kickoff we stop guessing altogether — confirmed happening that a
+    fixture can keep reporting IN_PLAY for a while after full time before
+    the source's own FINISHED flip catches up, and projecting an
+    ever-larger fake minute in that window is worse than showing none."""
+    if minute is not None:
+        return f"{minute}'", False
+    if status not in ("IN_PLAY", "PAUSED"):
+        return None, False
+
+    elapsed = (now - kickoff).total_seconds() / 60
+    if elapsed > ESTIMATED_MATCH_DURATION.total_seconds() / 60:
+        return None, False
+
+    state = session.get(LiveMatchState, match_id)
+    if state is None:
+        state = LiveMatchState(match_id=match_id, last_status=status, updated_at=now, total_paused_minutes=0.0)
+        session.add(state)
+
+    if status == "PAUSED":
+        if state.paused_since is None:
+            state.paused_since = now
+        state.last_status = status
+        state.updated_at = now
+        return "HT", False
+
+    # status == IN_PLAY
+    if state.paused_since is not None:
+        state.total_paused_minutes = (state.total_paused_minutes or 0.0) + (now - state.paused_since).total_seconds() / 60
+        state.paused_since = None
+    state.last_status = status
+    state.updated_at = now
+
+    observed_pause = state.total_paused_minutes or 0.0
+    if observed_pause <= 0 and elapsed > 50:
+        # Never actually observed this match go through a stoppage — best-
+        # effort placeholder for the one gap every match has (half-time)
+        # until a real pause anchors it instead.
+        observed_pause = 15
+    playing_minutes = elapsed - observed_pause
+
+    # No hard cap at 90 — stoppage time routinely runs 5-10+ real minutes
+    # now (VAR reviews especially), and freezing the display at "90'" while
+    # the match visibly continues is its own inaccuracy. Past 90, show the
+    # standard broadcast "90+N" form instead of a raw minute; N is capped
+    # only as a sanity backstop against a match that never gets marked
+    # finished by the source (a real stoppage this long has never happened).
+    minute_int = int(max(1, round(playing_minutes)))
+    if minute_int > 90:
+        return f"~90+{min(minute_int - 90, 20)}'", True
+    return f"~{minute_int}'", True
+
 
 @app.get("/api/live-scores")
 def live_scores():
@@ -552,6 +730,7 @@ def live_scores():
     try:
         teams_by_norm = {normalize(name): team_id for team_id, name in session.query(Team.id, Team.canonical_name)}
         now = dt.datetime.utcnow()
+        _prune_live_match_state(session, now)
 
         matches: dict[str, dict] = {}
         live: list[dict] = []
@@ -589,9 +768,21 @@ def live_scores():
             if not candidates:
                 continue
 
-            clock = "HT" if row["status"] == "PAUSED" else (f"{row['minute']}'" if row["minute"] is not None else None)
+            try:
+                clock, clock_estimated = _resolve_live_clock(
+                    session, candidates[0].id, row["status"], row["minute"], candidates[0].utc_kickoff, now
+                )
+            except Exception:
+                session.rollback()
+                clock = "HT" if row["status"] == "PAUSED" else None
+                clock_estimated = False
             for match in candidates:
-                matches[str(match.id)] = {"home_goals": row["home_goals"], "away_goals": row["away_goals"], "clock": clock}
+                matches[str(match.id)] = {
+                    "home_goals": row["home_goals"],
+                    "away_goals": row["away_goals"],
+                    "clock": clock,
+                    "clock_estimated": clock_estimated,
+                }
 
             home_primary = home.primary_color or team_colors(home.canonical_name)[0]
             away_primary = away.primary_color or team_colors(away.canonical_name)[0]
@@ -614,6 +805,11 @@ def live_scores():
                     "clock": clock,
                 }
             )
+
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
 
         return JSONResponse({"matches": matches, "live": live})
     finally:
@@ -712,6 +908,9 @@ def competition_page(request: Request, slug: str):
                     row["zone"] = league_zone_for(slug, row["position"], len(standings))
         standings_has_zones = bool(standings) and any(r.get("zone") for r in standings)
 
+        news = _news_for_competition(session, competition.id, season_start=season_start_dt)
+        news_has_dedicated_feed = any(f["competition_slug"] == slug for f in NEWS_FEEDS)
+
         top_scorers = (
             session.query(PlayerStat)
             .filter_by(competition_id=competition.id, category="goals")
@@ -761,6 +960,8 @@ def competition_page(request: Request, slug: str):
             player_stats_is_current=player_stats_is_current,
             stats_stale_reason=stats_stale_reason,
             current_season_label=current_season_label,
+            news=news,
+            news_has_dedicated_feed=news_has_dedicated_feed,
         )
         ctx["current_slug"] = slug
         ctx["body_theme_class"] = COMPETITION_THEME_CLASS.get(slug, "")
@@ -819,6 +1020,11 @@ def match_page(request: Request, match_id: int):
         home_form = _team_form(session, home.id, before=cutoff)
         away_form = _team_form(session, away.id, before=cutoff)
         h2h = _head_to_head(session, home.id, away.id)
+        # "Going into this match" grade, not "as of right now" — meaningful
+        # for a finished match too, not just an upcoming one.
+        home_form_grade = form_grade(session, home.id, as_of=cutoff)
+        away_form_grade = form_grade(session, away.id, as_of=cutoff)
+        news = _news_for_teams(session, [home.id, away.id])
 
         market_probs = devigged_market_probs(match)
         market = None
@@ -840,8 +1046,11 @@ def match_page(request: Request, match_id: int):
             kickoff_display=_kickoff_display(match.utc_kickoff),
             home_form=home_form,
             away_form=away_form,
+            home_form_grade=home_form_grade,
+            away_form_grade=away_form_grade,
             head_to_head=h2h,
             market=market,
+            news=news,
         )
         ctx["body_theme_class"] = COMPETITION_THEME_CLASS.get(competition.slug if competition else "", "")
         return templates.TemplateResponse(request, "match.html", ctx)
@@ -872,6 +1081,9 @@ def team_page(request: Request, team_id: int):
         )
         upcoming_cards = [build_match_card(session, m, model_run.id if model_run else None) for m in upcoming]
         recent_form = _team_form(session, team_id, before=now, limit=10)
+        team_form_grade = form_grade(session, team_id, as_of=now)
+        squad = _squad_by_position(session, team_id)
+        news = _news_for_teams(session, [team_id])
 
         ratings = _cached_ratings(session)
         elo_rating = ratings.get(team_id, BASE_RATING)
@@ -882,6 +1094,9 @@ def team_page(request: Request, team_id: int):
             team=team,
             upcoming_cards=upcoming_cards,
             recent_form=recent_form,
+            team_form_grade=team_form_grade,
+            squad=squad,
+            news=news,
             elo_rating=elo_rating,
         )
         return templates.TemplateResponse(request, "team.html", ctx)

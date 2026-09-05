@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_bar.html" import probability_bar, no_prediction_placeholder %}
-{% from "_badge.html" import team_badge, competition_badge %}
+{% from "_badge.html" import team_badge, competition_badge, form_grade_badge %}
+{% from "_news.html" import news_list %}
 {% block title %}{{ home.canonical_name }} vs {{ away.canonical_name }} · Xpected{% endblock %}
 {% block content %}
 
@@ -108,7 +109,10 @@
 
 <div class="grid sm:grid-cols-2 gap-4 mb-6">
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
-    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">{{ home.canonical_name }} · last 5</h2>
+    <h2 class="flex items-center gap-2 text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">
+      <span>{{ home.canonical_name }} · last 5</span>
+      {{ form_grade_badge(home_form_grade) }}
+    </h2>
     <div class="grid gap-2">
       {% for f in home_form %}
       <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
@@ -122,7 +126,10 @@
     </div>
   </div>
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
-    <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">{{ away.canonical_name }} · last 5</h2>
+    <h2 class="flex items-center gap-2 text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">
+      <span>{{ away.canonical_name }} · last 5</span>
+      {{ form_grade_badge(away_form_grade) }}
+    </h2>
     <div class="grid gap-2">
       {% for f in away_form %}
       <a href="/match/{{ f.match.id }}" class="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
@@ -151,5 +158,10 @@
     <p class="text-sm text-gray-400">These teams haven't met in our data.</p>
     {% endfor %}
   </div>
+</div>
+
+<div class="mt-6">
+  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">News</h2>
+  {{ news_list(news, "No recent news mentioning either team in our sources.") }}
 </div>
 {% endblock %}

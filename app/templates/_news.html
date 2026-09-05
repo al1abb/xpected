@@ -1,0 +1,19 @@
+{% macro news_list(items, empty_message="No recent news.") %}
+{% if items %}
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+  {% for n in items %}
+  <a href="{{ n.url }}" target="_blank" rel="noopener noreferrer" class="flex items-start gap-3 px-4 py-2.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+    <span class="flex-1 min-w-0">
+      <span class="block truncate text-gray-700 dark:text-gray-300">{{ n.title }}</span>
+      <span class="text-xs text-gray-400 dark:text-gray-400 capitalize">{{ n.source }}{% if n.published_at %} · {{ n.published_at.strftime('%d %b') }}{% endif %}</span>
+    </span>
+    <span class="shrink-0 text-gray-300 dark:text-gray-600" aria-hidden="true">&#8599;</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-6 text-center text-sm text-gray-500">
+  {{ empty_message }}
+</div>
+{% endif %}
+{% endmacro %}

@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import BASE_DIR
 from app.db import SessionLocal, init_db
+from ingest.football_data_org_players import sync_scorers, sync_squads
+from ingest.news import sync_news
 from ingest.sync import run_api_sync, run_current_season_fixture_sync, run_free_sync
 from model.elo import compute_ratings, persist_ratings
 from model.predict import generate_predictions
@@ -64,6 +66,15 @@ def main() -> None:
             "persist Elo ratings for the web app",
             lambda: f"{persist_ratings(session, compute_ratings(session))} team ratings stored",
         )
+
+        # Current-season squads + scorers (football-data.org) — the fix for
+        # PlayerStat being stuck on 2024/25 data, since API-Football's free
+        # tier walls off every season after that. Covers only its TIER_ONE
+        # competitions (see ingest/football_data_org_players.py); app/main.py
+        # shows an explicit empty state for the rest rather than stale data.
+        _step("squads (football-data.org)", lambda: sync_squads(session))
+        _step("top scorers/assists (football-data.org)", lambda: sync_scorers(session))
+        _step("football news (RSS)", lambda: sync_news(session))
     finally:
         session.close()
 

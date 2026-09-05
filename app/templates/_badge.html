@@ -9,6 +9,21 @@
 {% endif %}
 {% endmacro %}
 
+{% macro form_grade_badge(grade) %}
+{% if grade %}
+{# PES-style A-E form grade: recent points-per-game vs the team's OWN season
+   average, not an absolute scale — see model/form.py::form_grade. Colors run
+   green (A, well above their own normal) through neutral gray (C) to red
+   (E, well below it); every shade here was checked for >=4.5:1 contrast
+   against the white glyph, same bar as the league zone banding palette. #}
+{% set colors = {'A': 'bg-green-700', 'B': 'bg-lime-700', 'C': 'bg-slate-500', 'D': 'bg-orange-700', 'E': 'bg-red-600'} %}
+<span class="inline-flex shrink-0 items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-bold leading-none text-white {{ colors[grade.letter] }}"
+      title="Form: {{ '%.2f'|format(grade.recent_ppg) }} pts/game recently vs their own {{ '%.2f'|format(grade.season_ppg) }} season average">
+  {{ grade.letter }}<span aria-hidden="true">{{ grade.arrow }}</span>
+</span>
+{% endif %}
+{% endmacro %}
+
 {% macro competition_badge(comp, size=6) %}
 {% set logo = competition_logo(comp.slug) %}
 {% if logo %}

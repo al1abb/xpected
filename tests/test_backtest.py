@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Match, ModelRun, Prediction, Team
-from model.backtest import brier, live_tracking_summary, log_loss, rps, tracked_predictions_page
+from model.backtest import brier, live_tracking_summary, log_loss, rps, tracked_predictions_page, wilson_interval
 
 
 @pytest.fixture()
@@ -63,6 +63,25 @@ def test_log_loss_handles_zero_probability_without_crashing():
     # A model that assigns literally 0% to the outcome that happened must not
     # raise (math domain error) — it should be heavily penalized instead.
     assert log_loss((1.0, 0.0, 0.0), actual=2) > 10
+
+
+# ---------- wilson_interval ----------
+
+
+def test_wilson_interval_zero_n_returns_zero_zero():
+    assert wilson_interval(0, 0) == (0.0, 0.0)
+
+
+def test_wilson_interval_contains_the_observed_rate():
+    low, high = wilson_interval(30, 44)
+    assert low < 30 / 44 < high
+
+
+def test_wilson_interval_widens_at_smaller_sample_size():
+    # Same observed rate, less data behind it -> less certainty -> wider band.
+    low_small, high_small = wilson_interval(3, 10)
+    low_large, high_large = wilson_interval(300, 1000)
+    assert (high_small - low_small) > (high_large - low_large)
 
 
 # ---------- live_tracking_summary ----------
@@ -168,6 +187,103 @@ def test_live_tracking_calibration_table_buckets_by_confidence(session):
     assert band["realized_rate"] == pytest.approx(1.0)
     assert result["recent"][0]["hit"] is True
     assert result["recent"][0]["predicted_pick"] == "home"
+    # New: expected accuracy is exactly the top-pick's own confidence (n=1);
+    # the Wilson interval on a single hit spans wide but must contain it.
+    assert result["expected_accuracy"] == pytest.approx(0.75)
+    assert result["ci_low"] <= result["accuracy"] <= result["ci_high"]
+    # No draws in this fixture -> ceiling is the full 100%.
+    assert result["draw_actual"] == 0
+    assert result["decidable_ceiling"] == pytest.approx(1.0)
+    assert result["decidable_accuracy"] == pytest.approx(result["accuracy"])
+
+
+def test_live_tracking_decidable_ceiling_accounts_for_actual_draws(session):
+    """One draw among two tracked matches -> ceiling is 50%, and decidable
+    accuracy rescales the raw hit rate by that ceiling rather than reporting
+    a number that can never reach 100% by construction."""
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+
+    kickoff = dt.datetime(2026, 1, 10)
+    # Home win, correctly picked home.
+    m1 = _finished_match(1, home.id, away.id, kickoff, 2, 0)
+    session.add(m1)
+    session.flush()
+    session.add(
+        Prediction(
+            match_id=m1.id, model_run_id=run.id, home_win_prob=0.7, draw_prob=0.2, away_win_prob=0.1,
+            created_at=kickoff - dt.timedelta(days=1),
+        )
+    )
+    # A draw the model still (correctly, per Answer 1) ranked home ahead of.
+    m2 = _finished_match(1, home.id, away.id, kickoff + dt.timedelta(days=1), 1, 1)
+    session.add(m2)
+    session.flush()
+    session.add(
+        Prediction(
+            match_id=m2.id, model_run_id=run.id, home_win_prob=0.5, draw_prob=0.3, away_win_prob=0.2,
+            created_at=kickoff,
+        )
+    )
+    session.commit()
+
+    result = live_tracking_summary(session)
+    assert result["n"] == 2
+    assert result["correct"] == 1  # the draw was necessarily a miss on top-pick
+    assert result["draw_actual"] == 1
+    assert result["decidable_ceiling"] == pytest.approx(0.5)
+    # 1 correct out of (2 matches * 50% ceiling) = 1 non-draw match -> 100%.
+    assert result["decidable_accuracy"] == pytest.approx(1.0)
+
+
+def test_live_tracking_decidable_accuracy_never_exceeds_100_percent(session):
+    """Regression: a correctly-picked draw must NOT stay in the numerator
+    while every draw (including that one) is removed from the denominator —
+    that combination is unbounded above 100%. Here: 2/2 non-draws correct
+    PLUS a correctly-picked draw. The naive (buggy) formula would give
+    3 correct / (3 * (2/3) ceiling) = 3/2 = 150%. The fix must cap at 100%:
+    (3 correct - 1 draw hit) / 2 non-draw matches = 100%, not more."""
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    run = ModelRun(params={})
+    session.add(run)
+    session.flush()
+    kickoff = dt.datetime(2026, 1, 10)
+
+    for i, (hg, ag) in enumerate([(2, 0), (0, 1)]):  # two non-draws, both correctly picked
+        m = _finished_match(1, home.id, away.id, kickoff + dt.timedelta(days=i), hg, ag)
+        session.add(m)
+        session.flush()
+        home_p, away_p = (0.7, 0.1) if hg > ag else (0.1, 0.7)
+        session.add(
+            Prediction(
+                match_id=m.id, model_run_id=run.id, home_win_prob=home_p, draw_prob=0.2, away_win_prob=away_p,
+                created_at=m.utc_kickoff - dt.timedelta(hours=1),
+            )
+        )
+    # A draw the model correctly ranked as its top pick.
+    m_draw = _finished_match(1, home.id, away.id, kickoff + dt.timedelta(days=2), 1, 1)
+    session.add(m_draw)
+    session.flush()
+    session.add(
+        Prediction(
+            match_id=m_draw.id, model_run_id=run.id, home_win_prob=0.2, draw_prob=0.6, away_win_prob=0.2,
+            created_at=m_draw.utc_kickoff - dt.timedelta(hours=1),
+        )
+    )
+    session.commit()
+
+    result = live_tracking_summary(session)
+    assert result["n"] == 3
+    assert result["correct"] == 3  # all three, including the draw, were hits
+    assert result["draw_actual"] == 1
+    assert result["decidable_accuracy"] == pytest.approx(1.0)
+    assert result["decidable_accuracy"] <= 1.0
 
 
 # ---------- tracked_predictions_page ----------
