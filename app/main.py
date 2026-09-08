@@ -576,7 +576,11 @@ def _build_rows(starters: list[Lineup], formation: str | None) -> list[tuple[str
 # collision fix has to come entirely from vertical spacing, not a horizontal
 # nudge (an earlier version tried that; it made a centered striker look
 # visibly off, for no reason obvious to anyone not reading this comment).
-_GK_PCT = 94.0  # home GK sits here; away GK sits at 100 - this (= 6.0)
+_GK_PCT = 90.0  # home GK sits here; away GK sits at 100 - this (= 10.0). Confirmed
+# live: at 94, a GK's own photo circle sat almost exactly on top of the pitch's
+# touchline, visibly cutting a chunk out of it — reported as "horizontal lines
+# look weak" (the top/bottom edges specifically; the halfway line already had
+# clearance, and the left/right edges are never near any marker at all).
 _ATTACK_PCT = 56.0  # home's frontmost row; away's sits at 100 - this (= 44.0)
 _ROW_SPAN = _GK_PCT - _ATTACK_PCT  # 38 points from GK to a team's own attack line
 _HALFWAY_GAP = _ATTACK_PCT - (100.0 - _ATTACK_PCT)  # 12 points between the two attack lines
