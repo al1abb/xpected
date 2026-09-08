@@ -128,13 +128,18 @@
       <g stroke="white" stroke-width="0.4" fill="none">
         <rect x="1.5" y="1.5" width="97" height="97"/>
         <line x1="1.5" y1="50" x2="98.5" y2="50"/>
-        <circle cx="50" cy="50" r="8"/>
         <rect x="26" y="1.5" width="48" height="16"/>
         <rect x="38" y="1.5" width="24" height="6"/>
         <rect x="26" y="82.5" width="48" height="16"/>
         <rect x="38" y="94.5" width="24" height="6"/>
       </g>
     </svg>
+    {# A circle drawn inside the SVG above would stretch into an ellipse —
+       the viewBox is a square 100x100, but preserveAspectRatio="none" scales
+       it non-uniformly to fill this non-square container (needed so the
+       rects/lines reach every edge). aspect-ratio: 1/1 on its own element,
+       sized off the container's actual width, stays round regardless. #}
+    <div class="absolute rounded-full border-white" style="border-width: 1.5px; top: 50%; left: 50%; width: 16%; aspect-ratio: 1 / 1; transform: translate(-50%, -50%);"></div>
 
     {% for side_key, side, ring_color in [('away', lineups.away, away_color), ('home', lineups.home, home_color)] %}
     {% for p in side.pitch %}
