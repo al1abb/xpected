@@ -8,6 +8,12 @@ name: Close out finished matches
 # Closes just those rows; no model refit, no full ingest, so it's cheap
 # enough to run every 15 minutes. See scripts/close_out_finished_matches.py.
 #
+# Also runs scripts/sync_upcoming_lineups.py in the same job — a lineup for
+# a match kicking off soon (or already underway) needs the same kind of
+# frequent check a finished-match score does, and piggybacking here avoids a
+# second workflow competing for the same deploy budget documented below.
+# Skips itself cleanly if BIGBALLS_API_KEY isn't set.
+#
 # Self-healing by design: if this run's push ever loses a race against
 # daily-refresh.yml (both touch data/app.db), it just fails that one run —
 # the next run 15 minutes later re-checks the same matches and succeeds,
@@ -48,14 +54,19 @@ jobs:
           FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
         run: python scripts/close_out_finished_matches.py
 
-      - name: Commit and push if anything closed
+      - name: Sync lineups for matches near or past kickoff
+        env:
+          BIGBALLS_API_KEY: ${{ secrets.BIGBALLS_API_KEY }}
+        run: python scripts/sync_upcoming_lineups.py
+
+      - name: Commit and push if anything changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/app.db
           if git diff --cached --quiet; then
-            echo "Nothing closed out, skipping commit."
+            echo "Nothing changed, skipping commit."
           else
-            git commit -m "Close out finished matches: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git commit -m "Live sync (close-outs + lineups): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             git push
           fi

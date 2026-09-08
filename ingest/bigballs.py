@@ -25,8 +25,12 @@ resolves against an EXISTING Match row via the natural key and never creates
 one. A match bigballsdata.com doesn't have, or whose teams don't resolve,
 simply gets no Lineup/PlayerMatchStat rows — never a wrong or partial one.
 
-NOT wired into scripts/refresh.py. Run scripts/sync_lineups.py manually until
-a decision is made to add it to the daily loop.
+Two sync paths, run on different schedules because they need to: sync_all
+(finished matches, current-season box scores) runs daily via
+scripts/refresh.py. sync_all_upcoming (lineups only, for matches close to or
+past kickoff) needs to run much more often — a lineup can go from unpublished
+to published in the minutes before a game — see scripts/sync_upcoming_lineups.py
+and its own docstring for the current honest status of that path.
 """
 
 from __future__ import annotations
@@ -107,8 +111,12 @@ def _extract_stat(stats: dict, keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _sync_match_lineups(session: Session, match: Match, bbs_match_id: str) -> bool:
-    data = _paced_fetch_json(f"v1/stored/matches/{bbs_match_id}/lineups", max_age_hours=24 * 7)
+def _sync_match_lineups(session: Session, match: Match, bbs_match_id: str, *, max_age_hours: float = 24 * 7) -> bool:
+    # Finished matches (sync_competition, the default here) never change, so
+    # a week-long cache is free money. sync_upcoming_lineups passes a much
+    # shorter TTL — a scheduled/live match's lineup can flip from
+    # unpublished to published between two runs of that job.
+    data = _paced_fetch_json(f"v1/stored/matches/{bbs_match_id}/lineups", max_age_hours=max_age_hours)
     if not data.get("meta", {}).get("available"):
         return False
 
@@ -207,6 +215,52 @@ def _float_or_none(value: str | None) -> float | None:
         return None
 
 
+def _resolve_match(session: Session, competition: Competition, row: dict, pool: dict) -> Match | None:
+    """A bigballsdata.com match row -> our existing Match, or None. Shared by
+    the finished-match sync and the upcoming-lineup sync so the two can't
+    drift on how a row gets matched."""
+    home = resolve_existing_team(session, row["home"]["name"], SOURCE, context=f"bigballs {competition.slug}", pool=pool)
+    away = resolve_existing_team(session, row["away"]["name"], SOURCE, context=f"bigballs {competition.slug}", pool=pool)
+    if home is None or away is None:
+        return None
+
+    try:
+        kickoff = dt.datetime.fromisoformat(row["kickoff_utc"].replace("Z", "+00:00"))
+        kickoff = kickoff.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    except (KeyError, ValueError):
+        return None
+
+    match = (
+        session.query(Match)
+        .filter_by(competition_id=competition.id, utc_kickoff=kickoff, home_team_id=home.id, away_team_id=away.id)
+        .one_or_none()
+    )
+    if match is not None:
+        return match
+
+    # Confirmed live: bigballsdata.com's Bundesliga kickoffs run ~2h off true
+    # UTC (looks like a missed local->UTC conversion on their end; EPL/La
+    # Liga/Serie A/Ligue 1 didn't show this). An exact-timestamp match
+    # silently drops those rather than risk mismatching, so fall back to
+    # same-day + same-teams — still effectively unique (two fixtures between
+    # the same two clubs on the same calendar date doesn't happen), and skip
+    # on the rare case of >1 hit rather than guess.
+    day_start = kickoff.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + dt.timedelta(days=1)
+    candidates = (
+        session.query(Match)
+        .filter(
+            Match.competition_id == competition.id,
+            Match.home_team_id == home.id,
+            Match.away_team_id == away.id,
+            Match.utc_kickoff >= day_start,
+            Match.utc_kickoff < day_end,
+        )
+        .all()
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def sync_competition(session: Session, competition_slug: str, *, limit: int = 20) -> dict[str, int]:
     """Sync lineups + player stats for a competition's most recent finished
     matches. Returns counts for the caller (scripts/sync_lineups.py) to
@@ -231,46 +285,7 @@ def sync_competition(session: Session, competition_slug: str, *, limit: int = 20
     matched = lineups_written = stats_written = unresolved = 0
 
     for row in data.get("data", []):
-        home = resolve_existing_team(session, row["home"]["name"], SOURCE, context=f"bigballs {competition_slug}", pool=pool)
-        away = resolve_existing_team(session, row["away"]["name"], SOURCE, context=f"bigballs {competition_slug}", pool=pool)
-        if home is None or away is None:
-            unresolved += 1
-            continue
-
-        try:
-            kickoff = dt.datetime.fromisoformat(row["kickoff_utc"].replace("Z", "+00:00"))
-            kickoff = kickoff.astimezone(dt.timezone.utc).replace(tzinfo=None)
-        except (KeyError, ValueError):
-            continue
-
-        match = (
-            session.query(Match)
-            .filter_by(competition_id=competition.id, utc_kickoff=kickoff, home_team_id=home.id, away_team_id=away.id)
-            .one_or_none()
-        )
-        if match is None:
-            # Confirmed live: bigballsdata.com's Bundesliga kickoffs run ~2h off
-            # true UTC (looks like a missed local->UTC conversion on their end;
-            # EPL/La Liga/Serie A/Ligue 1 didn't show this). An exact-timestamp
-            # match silently drops those rather than risk mismatching, so fall
-            # back to same-day + same-teams — still effectively unique (two
-            # fixtures between the same two clubs on the same calendar date
-            # doesn't happen), and skip on the rare case of >1 hit rather than
-            # guess.
-            day_start = kickoff.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end = day_start + dt.timedelta(days=1)
-            candidates = (
-                session.query(Match)
-                .filter(
-                    Match.competition_id == competition.id,
-                    Match.home_team_id == home.id,
-                    Match.away_team_id == away.id,
-                    Match.utc_kickoff >= day_start,
-                    Match.utc_kickoff < day_end,
-                )
-                .all()
-            )
-            match = candidates[0] if len(candidates) == 1 else None
+        match = _resolve_match(session, competition, row, pool)
         if match is None:
             unresolved += 1
             continue
@@ -299,8 +314,125 @@ def sync_competition(session: Session, competition_slug: str, *, limit: int = 20
     return {"matched": matched, "lineups": lineups_written, "stats": stats_written, "unresolved": unresolved}
 
 
+def sync_upcoming_lineups(session: Session, competition_slug: str, *, hours_ahead: float = 3.0) -> dict[str, int]:
+    """Lineups only (never stats — a match that hasn't finished has no box
+    score yet) for matches kicking off within `hours_ahead`, plus anything
+    currently live. This is the ONLY path that ever asks for a non-finished
+    match; sync_competition/sync_all never do.
+
+    UNTESTED end-to-end as of writing: the lineups endpoint's own docs say
+    "Starting XI + bench when published" (implying pre-kickoff availability
+    independent of match status), but every league covered here was mid
+    international-break when this was built — nothing was ever within reach
+    of a real kickoff to confirm the success path against. The failure path
+    IS confirmed: an unpublished lineup returns `available: false` and
+    _sync_match_lineups already writes nothing rather than a wrong/empty
+    row (same as it does for a finished match bigballsdata.com never
+    covered). Worth re-checking the first time this runs near a real kickoff.
+
+    Cache TTL matters here more than in sync_competition: this is meant to
+    run every ~15 minutes (see scripts/sync_upcoming_lineups.py), so both the
+    match list and each lineup fetch use a short max_age_hours rather than
+    the day-scale one finished matches get — a stale cache would mean never
+    seeing a lineup that got published mid-window."""
+    league_key = LEAGUE_CODES.get(competition_slug)
+    if league_key is None:
+        return {"skipped": "not covered by bigballsdata.com"}
+    if not settings.bigballs_api_key:
+        return {"skipped": "BIGBALLS_API_KEY not set"}
+
+    started = dt.datetime.utcnow()
+    cutoff = started + dt.timedelta(hours=hours_ahead)
+
+    # Collect candidates from the API response alone, BEFORE touching the
+    # database at all. Confirmed live: even a read-only query against
+    # TeamAlias (needed to resolve a team) changes data/app.db at the byte
+    # level — SQLite/SQLAlchemy touches the file's header on a query of that
+    # size regardless of whether anything is logically written. Since this
+    # runs every ~15 minutes and data/app.db is git-linked to Vercel, that
+    # byte-level diff alone would trigger a commit-and-redeploy on nearly
+    # every run, whether or not a match was actually in the window — a much
+    # smaller, single-row Competition lookup did NOT reproduce this, only
+    # the larger alias-pool query did. So the database is only opened at all
+    # once we already know there's a real candidate to resolve.
+    candidates: list[tuple[str, dict]] = []
+    for status in ("scheduled", "live"):
+        data = _paced_fetch_json(
+            "v1/matches",
+            params={"sport": "football", "league": league_key, "status": status, "limit": 20},
+            max_age_hours=0.2,
+        )
+        for row in data.get("data", []):
+            if status == "scheduled":
+                try:
+                    kickoff = dt.datetime.fromisoformat(row["kickoff_utc"].replace("Z", "+00:00"))
+                    kickoff = kickoff.astimezone(dt.timezone.utc).replace(tzinfo=None)
+                except (KeyError, ValueError):
+                    continue
+                if kickoff > cutoff:
+                    continue
+            candidates.append((status, row))
+
+    if not candidates:
+        return {"matched": 0, "published": 0, "unresolved": 0}
+
+    competition = session.query(Competition).filter_by(slug=competition_slug).one()
+    pool = build_alias_pool(session, exclude_source=SOURCE)
+    matched = published = unresolved = 0
+
+    for _status, row in candidates:
+        match = _resolve_match(session, competition, row, pool)
+        if match is None:
+            unresolved += 1
+            continue
+
+        # Only assign when it actually changes: this runs every ~15 minutes
+        # against every match in the window, and re-assigning an unchanged
+        # value still dirties the row for some SQLAlchemy versions — which
+        # would mean a needless commit (and, since data/app.db is git-linked
+        # to Vercel, a needless redeploy) on every single recheck of a match
+        # whose lineup still isn't published yet, not just the run where
+        # something changes.
+        if match.bbs_match_id != row["id"]:
+            match.bbs_match_id = row["id"]
+        matched += 1
+        if _sync_match_lineups(session, match, row["id"], max_age_hours=0.2):
+            published += 1
+        session.commit()
+
+    # Only log (and thus only touch data/app.db) when a lineup actually got
+    # published this run — not just "matched", since a match can sit in the
+    # 3-hour window for a dozen 15-minute runs before its lineup goes up,
+    # and logging "checked, still nothing" every time would commit (and
+    # therefore redeploy, since data/app.db is git-linked to Vercel) on
+    # nearly every run during a normal matchday afternoon regardless of
+    # whether anything useful happened. Same "skip entirely if nothing
+    # changed" call close_out_finished_matches.py already makes.
+    if published:
+        session.add(
+            IngestLog(
+                source=SOURCE,
+                competition_id=competition.id,
+                started_at=started,
+                finished_at=dt.datetime.utcnow(),
+                status="ok",
+                rows_ingested=published,
+                message=f"upcoming lineups: matched={matched}, published={published}, unresolved={unresolved}",
+            )
+        )
+        session.commit()
+    return {"matched": matched, "published": published, "unresolved": unresolved}
+
+
 def sync_all(session: Session, *, limit: int = 20) -> dict[str, dict]:
     """Sync every competition LEAGUE_CODES covers. Entry point for
     scripts/refresh.py's daily loop and scripts/sync_lineups.py alike, so
     the two never drift on which competitions get synced."""
     return {slug: sync_competition(session, slug, limit=limit) for slug in LEAGUE_CODES}
+
+
+def sync_all_upcoming(session: Session, *, hours_ahead: float = 3.0) -> dict[str, dict]:
+    """sync_upcoming_lineups for every competition LEAGUE_CODES covers.
+    Entry point for scripts/sync_upcoming_lineups.py — see that function's
+    docstring for what "upcoming" means here and what's confirmed vs. not."""
+    return {slug: sync_upcoming_lineups(session, slug, hours_ahead=hours_ahead) for slug in LEAGUE_CODES}
