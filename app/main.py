@@ -472,29 +472,14 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
     home_rows = _build_rows(home_starters, match.home_formation)
     away_rows = _build_rows(away_starters, match.away_formation)
 
-    # Only nudge the away frontmost row when it would actually land on top of
-    # home's — see _position_rows's docstring for why this must be
-    # conditional, not automatic.
-    home_frontmost = len(home_rows[-1][1]) if home_rows else 0
-    away_frontmost = len(away_rows[-1][1]) if away_rows else 0
-    needs_jitter = bool(home_rows and away_rows and home_frontmost == away_frontmost)
-
-    # Pitch height scales with what THIS match actually needs, not a fixed
-    # worst-case: a 4-row team (most matches) doesn't need the vertical room
-    # a 5-row team (e.g. 4-2-3-1's two midfield lines) does, and forcing
-    # every match that tall looked absurdly stretched (confirmed live).
-    # 200px per row-gap at a 320px-wide reference clears the ~78px a marker
-    # (photo + name/role + stat line) actually needs; floor of 2 rows keeps
-    # a degenerate 1-row side from producing a near-square pitch.
     max_rows = max(len(home_rows), len(away_rows), 2)
-    pitch_height = 200 * (max_rows - 1)
-    pitch_aspect_ratio = f"320 / {pitch_height}"
+    pitch_aspect_ratio = f"{_PITCH_REF_WIDTH} / {_required_pitch_height(max_rows)}"
 
-    def _side(team_id: int, formation: str | None, side_rows: list[tuple[str, list[Lineup]]], *, is_home: bool, jitter: bool) -> dict:
+    def _side(team_id: int, formation: str | None, side_rows: list[tuple[str, list[Lineup]]], *, is_home: bool) -> dict:
         bench = sorted(
             (p for p in rows if p.team_id == team_id and not p.starter), key=lambda r: r.order_index or 0
         )
-        positioned = _position_rows(side_rows, is_home=is_home, jitter_frontmost=jitter)
+        positioned = _position_rows(side_rows, is_home=is_home)
         return {
             "formation": formation,
             "pitch": [
@@ -505,8 +490,8 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
         }
 
     return {
-        "home": _side(match.home_team_id, match.home_formation, home_rows, is_home=True, jitter=False),
-        "away": _side(match.away_team_id, match.away_formation, away_rows, is_home=False, jitter=needs_jitter),
+        "home": _side(match.home_team_id, match.home_formation, home_rows, is_home=True),
+        "away": _side(match.away_team_id, match.away_formation, away_rows, is_home=False),
         "pitch_aspect_ratio": pitch_aspect_ratio,
     }
 
@@ -586,23 +571,42 @@ def _build_rows(starters: list[Lineup], formation: str | None) -> list[tuple[str
     return rows
 
 
-def _position_rows(
-    rows: list[tuple[str, list[Lineup]]], *, is_home: bool, jitter_frontmost: bool
-) -> list[tuple[Lineup, tuple[float, float], str]]:
+# Row geometry constants. A lone striker (or any row with only one player)
+# always sits dead-center — real lineup graphics never offset it, so the
+# collision fix has to come entirely from vertical spacing, not a horizontal
+# nudge (an earlier version tried that; it made a centered striker look
+# visibly off, for no reason obvious to anyone not reading this comment).
+_GK_PCT = 94.0  # home GK sits here; away GK sits at 100 - this (= 6.0)
+_ATTACK_PCT = 56.0  # home's frontmost row; away's sits at 100 - this (= 44.0)
+_ROW_SPAN = _GK_PCT - _ATTACK_PCT  # 38 points from GK to a team's own attack line
+_HALFWAY_GAP = _ATTACK_PCT - (100.0 - _ATTACK_PCT)  # 12 points between the two attack lines
+_MIN_GAP_PX = 78.0  # a marker (photo + name/role + stat line) is about this tall
+_PITCH_REF_WIDTH = 320  # the width _required_pitch_height's px target is calibrated against
+
+
+def _required_pitch_height(row_count: int) -> int:
+    """Minimum pitch height (px, at a _PITCH_REF_WIDTH-wide card) that keeps
+    every adjacent pair of markers >=_MIN_GAP_PX apart — both within one
+    team's own rows AND between the two teams' frontmost rows at the
+    halfway line, whichever is tighter. Confirmed live: for a common 4-row
+    team the halfway gap (fixed at _HALFWAY_GAP regardless of row count) is
+    actually the binding constraint, not the internal row spacing — sizing
+    the pitch only for internal spacing let two teams' lone strikers
+    collide even after the row-count-aware height was added."""
+    internal_gap_pts = _ROW_SPAN / max(row_count - 1, 1)
+    tightest_gap_pts = min(internal_gap_pts, _HALFWAY_GAP)
+    return round(_MIN_GAP_PX * 100 / tightest_gap_pts)
+
+
+def _position_rows(rows: list[tuple[str, list[Lineup]]], *, is_home: bool) -> list[tuple[Lineup, tuple[float, float], str]]:
     """(player, (top_pct, left_pct), role_label) for every starter in `rows`,
     laid out on a single vertical pitch shared by both teams (home
     defends/attacks from the bottom, away mirrored from the top, meeting at
-    the halfway line) — the standard lineup-graphic convention.
-
-    `jitter_frontmost`: both teams' frontmost row uses the identical
-    left_pct formula, so whenever they carry the same player count — two
-    lone strikers is the common case, but two 2-striker systems land the
-    same way too — they sit at the EXACT same x. That's what causes a photo
-    to cover another player's score right at the halfway line (confirmed
-    live). The caller (_match_lineups) only sets this when the two sides'
-    frontmost rows actually share a count — nudging it unconditionally
-    made a lone striker visibly off-center on every match, even the ones
-    with no collision risk at all."""
+    the halfway line) — the standard lineup-graphic convention. Every row is
+    centered left-to-right by its own player count; a lone striker is
+    always at left_pct=50. See _required_pitch_height for how match.html's
+    pitch gets tall enough that this never has to fudge a position
+    horizontally to avoid a collision."""
     if not rows:
         return []
 
@@ -610,29 +614,34 @@ def _position_rows(
     row_count = len(rows)
     for i, (row_type, row) in enumerate(rows):
         t = i / (row_count - 1) if row_count > 1 else 0.0
-        # 94/6 with a 39-point span: a marker (photo + name + role + stat)
-        # is taller than a tighter spread leaves room for between SAME-team
-        # adjacent rows (confirmed live: a 5-row team's own front row circle
-        # overlapping its own midfield row). match.html sizes the pitch's
-        # actual height per-match (see _match_lineups) so this percentage
-        # spread clears a real pixel target regardless of row count, instead
-        # of assuming every match is the worst-case 5-row shape.
-        top_pct = (94 - t * 39) if is_home else (6 + t * 39)
+        top_pct = (_GK_PCT - t * _ROW_SPAN) if is_home else ((100.0 - _GK_PCT) + t * _ROW_SPAN)
         k = len(row)
         labels = _role_labels(row_type, k)
-        is_frontmost = i == row_count - 1
-        jitter = 16.0 if (jitter_frontmost and not is_home and is_frontmost) else 0.0
         for j, player in enumerate(row):
-            left_pct = 10 + (80 / k) * (j + 0.5) + jitter
-            left_pct = max(8.0, min(92.0, left_pct))
+            left_pct = 10 + (80 / k) * (j + 0.5)
             positioned.append((player, (round(top_pct, 1), round(left_pct, 1)), labels[j]))
     return positioned
+
+
+def _surname(name: str) -> str:
+    """Last name only for the pitch marker label ("Messi", not "Lionel
+    Messi") — the source gives full names for some players and already-
+    abbreviated ones for others, so this always takes the last word. A
+    lowercase second-to-last word ("van", "de", "dos", ...) is kept too,
+    since dropping it changes a real surname ("van Dijk" -> "Dijk" reads as
+    a different, wrong name) — a heuristic, not a name-particle dictionary,
+    so an unusual capitalization slips through uncaught."""
+    parts = name.split()
+    if len(parts) >= 2 and parts[-2].islower():
+        return f"{parts[-2]} {parts[-1]}"
+    return parts[-1] if parts else name
 
 
 def _lineup_row(player: Lineup, stat: PlayerMatchStat | None) -> dict:
     extra = (stat.extra if stat else None) or {}
     return {
         "name": player.player_name,
+        "surname": _surname(player.player_name),
         "position": player.position,
         "jersey_number": player.jersey_number,
         "goals": stat.goals if stat else None,
