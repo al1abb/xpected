@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     api_football_daily_cap: int = 90
     football_data_org_token: str = ""
     bigballs_api_key: str = ""
+    highlightly_api_key: str = ""
     database_url: str = f"sqlite:///{(BASE_DIR / 'data' / 'app.db').as_posix()}"
     stale_after_hours: int = 36
     # Vercel sets this env var automatically in its build/runtime environment —
@@ -36,6 +37,7 @@ FOOTBALL_DATA_CSV_BASE = "https://www.football-data.co.uk"
 CLUBELO_API_BASE = "http://api.clubelo.com"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 BIGBALLS_API_BASE = "https://api.bigballsdata.com"
+HIGHLIGHTLY_API_BASE = "https://soccer.highlightly.net"
 
 COMPETITION_TYPE_LEAGUE = "league"
 COMPETITION_TYPE_UEFA_CUP = "uefa_cup"

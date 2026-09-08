@@ -8,11 +8,14 @@ name: Close out finished matches
 # Closes just those rows; no model refit, no full ingest, so it's cheap
 # enough to run every 15 minutes. See scripts/close_out_finished_matches.py.
 #
-# Also runs scripts/sync_upcoming_lineups.py in the same job — a lineup for
-# a match kicking off soon (or already underway) needs the same kind of
-# frequent check a finished-match score does, and piggybacking here avoids a
-# second workflow competing for the same deploy budget documented below.
-# Skips itself cleanly if BIGBALLS_API_KEY isn't set.
+# Also runs scripts/sync_upcoming_lineups.py (bigballsdata.com: 5 leagues)
+# and scripts/sync_highlightly_lineups.py (Highlightly: Champions League +
+# Europa League, which bigballsdata.com doesn't cover at all) in the same
+# job — a lineup for a match kicking off soon (or already underway) needs
+# the same kind of frequent check a finished-match score does, and
+# piggybacking here avoids a second workflow competing for the same deploy
+# budget documented below. Both skip themselves cleanly if their API key
+# isn't set.
 #
 # Self-healing by design: if this run's push ever loses a race against
 # daily-refresh.yml (both touch data/app.db), it just fails that one run —
@@ -58,6 +61,11 @@ jobs:
         env:
           BIGBALLS_API_KEY: ${{ secrets.BIGBALLS_API_KEY }}
         run: python scripts/sync_upcoming_lineups.py
+
+      - name: Sync Champions League / Europa League lineups
+        env:
+          HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
+        run: python scripts/sync_highlightly_lineups.py
 
       - name: Commit and push if anything changed
         run: |

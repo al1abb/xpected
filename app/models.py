@@ -153,6 +153,7 @@ class Match(Base):
     source: Mapped[str] = mapped_column(String(32))  # 'football_data' | 'api_football'
     af_fixture_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     bbs_match_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)  # bigballsdata.com uuid
+    highlightly_match_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     home_formation: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "4-2-3-1", from Lineup sync
     away_formation: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
@@ -289,24 +290,26 @@ class SquadPlayer(Base):
 
 
 class Lineup(Base):
-    """Per-match starting XI + bench from bigballsdata.com — the first source
-    found (Sept 2026) with real per-match squad data, not just the ~49
-    scorers/league SquadPlayer/PlayerStat are limited to. See
-    ingest/bigballs.py for coverage: 5 of this app's 12 competitions, current
-    season + 1 prior only (the free plan's own history wall), and only for
-    matches bigballsdata.com actually has a lineup for (confirmed live at
-    ~9% of ALL matches in their DB, but dense within the free tier's
-    accessible window — spot-checked as effectively complete there).
+    """Per-match starting XI + bench. Two sources, covering disjoint
+    competitions so a given match's rows only ever come from one of them:
+    bigballsdata.com (ingest/bigballs.py — 5 leagues, see that module) and
+    Highlightly (ingest/highlightly.py — Champions League + Europa League,
+    the two bigballsdata.com doesn't cover at all). Same "everyone, not
+    just scorers" bar SquadPlayer/PlayerStat couldn't clear.
 
     Enrichment only, same pattern as ingest/api_football.py's crest sync:
     resolved against an EXISTING Match row via the natural key, never used to
-    invent one. A match bigballsdata.com doesn't cover, or whose teams don't
+    invent one. A match neither source covers, or whose teams don't
     resolve, simply has no rows here — never a blank/wrong lineup.
 
-    `bbs_player_id` is null on ~7% of entries (confirmed live) — a player
-    named but not linkable to any other bigballsdata.com endpoint. Kept
-    anyway (still a real, displayable name), but never something a model
-    feature should join on.
+    `bbs_player_id` holds whichever source's own player id applies (a
+    bigballsdata.com uuid, or a Highlightly integer id as a string) — named
+    for the source that used it first, not worth a schema churn to rename
+    given the two never collide on the same match. Null on ~7% of
+    bigballsdata.com entries (confirmed live) — a player named but not
+    linkable to any other endpoint of that source. Kept anyway (still a
+    real, displayable name), but never something a model feature should
+    join on.
 
     `order_index` preserves the source's own within-side list order — the API
     gives no explicit tactical slot (e.g. which of 4 defenders is the left

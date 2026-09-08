@@ -57,6 +57,7 @@ def init_db() -> None:
         ("matches", "away_formation", "VARCHAR(16)"),
         ("lineups", "order_index", "INTEGER"),
         ("player_match_stats", "headshot_url", "VARCHAR(256)"),
+        ("matches", "highlightly_match_id", "INTEGER"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
