@@ -475,8 +475,8 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
         return {
             "formation": formation,
             "pitch": [
-                {**_lineup_row(p, _stat_for(team_id, p)), "top_pct": pos[0], "left_pct": pos[1]}
-                for p, pos in positioned
+                {**_lineup_row(p, _stat_for(team_id, p)), "top_pct": pos[0], "left_pct": pos[1], "role": role}
+                for p, pos, role in positioned
             ],
             "bench": [_lineup_row(p, _stat_for(team_id, p)) for p in bench],
         }
@@ -511,53 +511,95 @@ def _split_midfield_rows(midfielders: list[Lineup], formation: str | None) -> li
     return rows
 
 
+# Left-to-right role labels per row, keyed by (row type, player count).
+# Purely a convention-based guess from slot position within the row — the
+# source gives no per-player role (LB vs CB vs RB), only the coarse G/D/M/F
+# code plus this row's own left-to-right order. "M_solo" is an unsplit
+# midfield row; "M_low"/"M_high" are the defensive/attacking halves of a
+# formation split into two midfield lines (e.g. the 2 and 3 in "4-2-3-1").
+_ROLE_LABELS: dict[str, dict[int, list[str]]] = {
+    "G": {1: ["GK"]},
+    "D": {3: ["CB", "CB", "CB"], 4: ["LB", "CB", "CB", "RB"], 5: ["LWB", "CB", "CB", "CB", "RWB"]},
+    "F": {1: ["ST"], 2: ["ST", "ST"], 3: ["LW", "ST", "RW"]},
+    "M_solo": {2: ["CM", "CM"], 3: ["CM", "CM", "CM"], 4: ["LM", "CM", "CM", "RM"], 5: ["LM", "CM", "CM", "CM", "RM"]},
+    "M_low": {1: ["CDM"], 2: ["CDM", "CDM"], 3: ["CDM", "CM", "CDM"]},
+    "M_high": {2: ["CAM", "CAM"], 3: ["LW", "CAM", "RW"], 4: ["LM", "CAM", "CAM", "RM"]},
+}
+_ROLE_FALLBACK = {"G": "GK", "D": "CB", "M_solo": "CM", "M_low": "CDM", "M_high": "CAM", "F": "ST"}
+
+
+def _role_labels(row_type: str, count: int) -> list[str]:
+    labels = _ROLE_LABELS.get(row_type, {}).get(count)
+    return labels if labels else [_ROLE_FALLBACK.get(row_type, "")] * count
+
+
 def _position_on_pitch(
     starters: list[Lineup], formation: str | None, *, is_home: bool
-) -> list[tuple[Lineup, tuple[float, float]]]:
-    """(player, (top_pct, left_pct)) for every starter, laid out on a single
-    vertical pitch shared by both teams (home defends/attacks from the
-    bottom, away mirrored from the top, meeting at the halfway line) —
-    the standard lineup-graphic convention.
+) -> list[tuple[Lineup, tuple[float, float], str]]:
+    """(player, (top_pct, left_pct), role_label) for every starter, laid out
+    on a single vertical pitch shared by both teams (home defends/attacks
+    from the bottom, away mirrored from the top, meeting at the halfway
+    line) — the standard lineup-graphic convention.
 
     Row assignment: group by position code (G/D/M/F, from the source
     directly), one row each for G/D/F and 1-2 rows for M (see
     _split_midfield_rows), ordered back-to-front. Within a row, players keep
     the source's own order_index — the closest thing to a left-to-right
     tactical order this API exposes; it is NOT a verified "this player is
-    the left-back" guarantee, just the best available signal. A team with
-    an unusual position mix (e.g. a back-3 mislabeled by the source) still
-    renders — it just won't look like a textbook formation shape."""
+    the left-back" guarantee, just the best available signal (see
+    _ROLE_LABELS). A team with an unusual position mix (e.g. a back-3
+    mislabeled by the source) still renders — it just won't look like a
+    textbook formation shape."""
     by_position: dict[str, list[Lineup]] = {"G": [], "D": [], "M": [], "F": []}
     for p in starters:
         by_position.setdefault(p.position or "M", []).append(p)
     for group in by_position.values():
         group.sort(key=lambda r: r.order_index if r.order_index is not None else 0)
 
-    rows: list[list[Lineup]] = []
+    rows: list[tuple[str, list[Lineup]]] = []
     if by_position["G"]:
-        rows.append(by_position["G"])
+        rows.append(("G", by_position["G"]))
     if by_position["D"]:
-        rows.append(by_position["D"])
-    rows.extend(_split_midfield_rows(by_position["M"], formation))
+        rows.append(("D", by_position["D"]))
+    mid_rows = _split_midfield_rows(by_position["M"], formation)
+    for idx, mid_row in enumerate(mid_rows):
+        row_type = "M_solo" if len(mid_rows) == 1 else ("M_low" if idx == 0 else "M_high")
+        rows.append((row_type, mid_row))
     if by_position["F"]:
-        rows.append(by_position["F"])
+        rows.append(("F", by_position["F"]))
     if not rows:
         return []
 
-    positioned: list[tuple[Lineup, tuple[float, float]]] = []
+    positioned: list[tuple[Lineup, tuple[float, float], str]] = []
     row_count = len(rows)
-    for i, row in enumerate(rows):
+    for i, (row_type, row) in enumerate(rows):
         t = i / (row_count - 1) if row_count > 1 else 0.0
-        # 10%/90% rather than the pitch's true edge: the marker (photo +
-        # name + stat row) is taller than the point it's centered on, so a
-        # goalkeeper row placed right at the edge renders partly outside the
-        # pitch background — confirmed live, this margin is sized for the
-        # smallest rendered pitch width (max-w-xs).
-        top_pct = (90 - t * 34) if is_home else (10 + t * 34)
+        # 94/6 with a 39-point span, not 92/8 with 38: a marker (photo + name
+        # + role + stat) is taller than the gap a tight spread leaves between
+        # SAME-team adjacent rows (confirmed live: a 5-row team's own front
+        # row circle overlapping its own midfield row), independent of the
+        # cross-team jitter below, which only fixes horizontal alignment at
+        # the halfway line, not a team's own internal row spacing.
+        top_pct = (94 - t * 39) if is_home else (6 + t * 39)
         k = len(row)
+        labels = _role_labels(row_type, k)
+        # Both teams' frontmost row uses the identical left_pct formula, so
+        # whenever they carry the same player count — two lone strikers is
+        # the common case, but two 2-striker systems land the same way —
+        # they sit at the EXACT same x. That's the real cause of a photo
+        # covering another player's score at the halfway line: confirmed
+        # live, two central strikers were both dead-centered at 50%, so no
+        # amount of vertical spacing alone fixes it without an impractically
+        # tall pitch (tried 3/8 aspect-ratio — cleared it, but felt absurdly
+        # stretched). A fixed horizontal nudge on the away side's frontmost
+        # row breaks that alignment directly, cheaply, and only touches the
+        # one row where it matters — the rest of the shape is untouched.
+        is_frontmost = i == row_count - 1
+        jitter = 12.0 if (not is_home and is_frontmost) else 0.0
         for j, player in enumerate(row):
-            left_pct = 10 + (80 / k) * (j + 0.5)
-            positioned.append((player, (round(top_pct, 1), round(left_pct, 1))))
+            left_pct = 10 + (80 / k) * (j + 0.5) + jitter
+            left_pct = max(8.0, min(92.0, left_pct))
+            positioned.append((player, (round(top_pct, 1), round(left_pct, 1)), labels[j]))
     return positioned
 
 
