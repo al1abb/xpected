@@ -472,8 +472,7 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
     home_rows = _build_rows(home_starters, match.home_formation)
     away_rows = _build_rows(away_starters, match.away_formation)
 
-    max_rows = max(len(home_rows), len(away_rows), 2)
-    pitch_aspect_ratio = f"{_PITCH_REF_WIDTH} / {_required_pitch_height(max_rows)}"
+    pitch_width_px, pitch_height_px = _pitch_dimensions(home_rows, away_rows)
 
     def _side(team_id: int, formation: str | None, side_rows: list[tuple[str, list[Lineup]]], *, is_home: bool) -> dict:
         bench = sorted(
@@ -492,7 +491,8 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
     return {
         "home": _side(match.home_team_id, match.home_formation, home_rows, is_home=True),
         "away": _side(match.away_team_id, match.away_formation, away_rows, is_home=False),
-        "pitch_aspect_ratio": pitch_aspect_ratio,
+        "pitch_width_px": pitch_width_px,
+        "pitch_height_px": pitch_height_px,
     }
 
 
@@ -584,18 +584,49 @@ _MIN_GAP_PX = 78.0  # a marker (photo + name/role + stat line) is about this tal
 _PITCH_REF_WIDTH = 320  # the width _required_pitch_height's px target is calibrated against
 
 
-def _required_pitch_height(row_count: int) -> int:
-    """Minimum pitch height (px, at a _PITCH_REF_WIDTH-wide card) that keeps
-    every adjacent pair of markers >=_MIN_GAP_PX apart — both within one
-    team's own rows AND between the two teams' frontmost rows at the
-    halfway line, whichever is tighter. Confirmed live: for a common 4-row
-    team the halfway gap (fixed at _HALFWAY_GAP regardless of row count) is
-    actually the binding constraint, not the internal row spacing — sizing
-    the pitch only for internal spacing let two teams' lone strikers
-    collide even after the row-count-aware height was added."""
+def _required_pitch_height(row_count: int, width_px: int) -> int:
+    """Minimum pitch height (px, AT `width_px`) that keeps every adjacent
+    pair of markers >=_MIN_GAP_PX apart — both within one team's own rows
+    AND between the two teams' frontmost rows at the halfway line,
+    whichever is tighter. Confirmed live: for a common 4-row team the
+    halfway gap (fixed at _HALFWAY_GAP regardless of row count) is actually
+    the binding constraint, not the internal row spacing — sizing the pitch
+    only for internal spacing let two teams' lone strikers collide even
+    after the row-count-aware height was added."""
     internal_gap_pts = _ROW_SPAN / max(row_count - 1, 1)
     tightest_gap_pts = min(internal_gap_pts, _HALFWAY_GAP)
-    return round(_MIN_GAP_PX * 100 / tightest_gap_pts)
+    return round(_MIN_GAP_PX * 100 / tightest_gap_pts * width_px / _PITCH_REF_WIDTH)
+
+
+# Keep this equal to the marker column's actual CSS width in match.html —
+# it's the real horizontal footprint a player's photo/name/stat pill needs.
+_MARKER_WIDTH_PX = 84  # 5.25rem at the default 16px root font size
+_PITCH_MAX_HEIGHT_PX = 1000
+
+
+def _pitch_dimensions(home_rows: list, away_rows: list) -> tuple[int, int]:
+    """(width_px, height_px) for the whole pitch. Width used to be a fixed
+    Tailwind breakpoint class, which caused a real bug: on a dense row (a
+    back-5, or two 3-wide rows), 80%-of-width / player-count left less
+    space between slot centers than a marker is actually wide, so
+    neighboring players' photos sat inside each other — confirmed live,
+    "players inside each other". Width is now sized off the densest row
+    either side actually has, same principle _required_pitch_height already
+    applies vertically. Both dimensions are clamped: width so a rare back-5
+    doesn't run off tiny screens, height so it never exceeds
+    _PITCH_MAX_HEIGHT_PX (confirmed live: an uncapped height for a wide+tall
+    combination blew past 1150px)."""
+    all_rows = home_rows + away_rows
+    max_k = max((len(row) for _, row in all_rows), default=1)
+    max_row_count = max(len(home_rows), len(away_rows), 2)
+
+    # A slot is (80/max_k)% of the pitch wide; need that >= _MARKER_WIDTH_PX.
+    width_px = round(_MARKER_WIDTH_PX * max_k * 100 / 80)
+    width_px = max(300, min(width_px, 480))
+
+    height_px = _required_pitch_height(max_row_count, width_px)
+    height_px = min(height_px, _PITCH_MAX_HEIGHT_PX)
+    return width_px, height_px
 
 
 def _position_rows(rows: list[tuple[str, list[Lineup]]], *, is_home: bool) -> list[tuple[Lineup, tuple[float, float], str]]:
