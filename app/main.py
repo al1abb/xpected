@@ -467,11 +467,34 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
             return stats_by_id[player.bbs_player_id]
         return stats_by_name.get((team_id, player.player_name))
 
-    def _side(team_id: int, formation: str | None, is_home: bool) -> dict:
-        players = [r for r in rows if r.team_id == team_id]
-        starters = [p for p in players if p.starter]
-        bench = sorted((p for p in players if not p.starter), key=lambda r: r.order_index or 0)
-        positioned = _position_on_pitch(starters, formation, is_home=is_home)
+    home_starters = [p for p in rows if p.team_id == match.home_team_id and p.starter]
+    away_starters = [p for p in rows if p.team_id == match.away_team_id and p.starter]
+    home_rows = _build_rows(home_starters, match.home_formation)
+    away_rows = _build_rows(away_starters, match.away_formation)
+
+    # Only nudge the away frontmost row when it would actually land on top of
+    # home's — see _position_rows's docstring for why this must be
+    # conditional, not automatic.
+    home_frontmost = len(home_rows[-1][1]) if home_rows else 0
+    away_frontmost = len(away_rows[-1][1]) if away_rows else 0
+    needs_jitter = bool(home_rows and away_rows and home_frontmost == away_frontmost)
+
+    # Pitch height scales with what THIS match actually needs, not a fixed
+    # worst-case: a 4-row team (most matches) doesn't need the vertical room
+    # a 5-row team (e.g. 4-2-3-1's two midfield lines) does, and forcing
+    # every match that tall looked absurdly stretched (confirmed live).
+    # 200px per row-gap at a 320px-wide reference clears the ~78px a marker
+    # (photo + name/role + stat line) actually needs; floor of 2 rows keeps
+    # a degenerate 1-row side from producing a near-square pitch.
+    max_rows = max(len(home_rows), len(away_rows), 2)
+    pitch_height = 200 * (max_rows - 1)
+    pitch_aspect_ratio = f"320 / {pitch_height}"
+
+    def _side(team_id: int, formation: str | None, side_rows: list[tuple[str, list[Lineup]]], *, is_home: bool, jitter: bool) -> dict:
+        bench = sorted(
+            (p for p in rows if p.team_id == team_id and not p.starter), key=lambda r: r.order_index or 0
+        )
+        positioned = _position_rows(side_rows, is_home=is_home, jitter_frontmost=jitter)
         return {
             "formation": formation,
             "pitch": [
@@ -482,8 +505,9 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
         }
 
     return {
-        "home": _side(match.home_team_id, match.home_formation, is_home=True),
-        "away": _side(match.away_team_id, match.away_formation, is_home=False),
+        "home": _side(match.home_team_id, match.home_formation, home_rows, is_home=True, jitter=False),
+        "away": _side(match.away_team_id, match.away_formation, away_rows, is_home=False, jitter=needs_jitter),
+        "pitch_aspect_ratio": pitch_aspect_ratio,
     }
 
 
@@ -533,18 +557,10 @@ def _role_labels(row_type: str, count: int) -> list[str]:
     return labels if labels else [_ROLE_FALLBACK.get(row_type, "")] * count
 
 
-def _position_on_pitch(
-    starters: list[Lineup], formation: str | None, *, is_home: bool
-) -> list[tuple[Lineup, tuple[float, float], str]]:
-    """(player, (top_pct, left_pct), role_label) for every starter, laid out
-    on a single vertical pitch shared by both teams (home defends/attacks
-    from the bottom, away mirrored from the top, meeting at the halfway
-    line) — the standard lineup-graphic convention.
-
-    Row assignment: group by position code (G/D/M/F, from the source
-    directly), one row each for G/D/F and 1-2 rows for M (see
-    _split_midfield_rows), ordered back-to-front. Within a row, players keep
-    the source's own order_index — the closest thing to a left-to-right
+def _build_rows(starters: list[Lineup], formation: str | None) -> list[tuple[str, list[Lineup]]]:
+    """Group one side's starters into back-to-front rows: one each for
+    G/D/F, plus 1-2 for M (see _split_midfield_rows). Within a row, players
+    keep the source's own order_index — the closest thing to a left-to-right
     tactical order this API exposes; it is NOT a verified "this player is
     the left-back" guarantee, just the best available signal (see
     _ROLE_LABELS). A team with an unusual position mix (e.g. a back-3
@@ -567,6 +583,26 @@ def _position_on_pitch(
         rows.append((row_type, mid_row))
     if by_position["F"]:
         rows.append(("F", by_position["F"]))
+    return rows
+
+
+def _position_rows(
+    rows: list[tuple[str, list[Lineup]]], *, is_home: bool, jitter_frontmost: bool
+) -> list[tuple[Lineup, tuple[float, float], str]]:
+    """(player, (top_pct, left_pct), role_label) for every starter in `rows`,
+    laid out on a single vertical pitch shared by both teams (home
+    defends/attacks from the bottom, away mirrored from the top, meeting at
+    the halfway line) — the standard lineup-graphic convention.
+
+    `jitter_frontmost`: both teams' frontmost row uses the identical
+    left_pct formula, so whenever they carry the same player count — two
+    lone strikers is the common case, but two 2-striker systems land the
+    same way too — they sit at the EXACT same x. That's what causes a photo
+    to cover another player's score right at the halfway line (confirmed
+    live). The caller (_match_lineups) only sets this when the two sides'
+    frontmost rows actually share a count — nudging it unconditionally
+    made a lone striker visibly off-center on every match, even the ones
+    with no collision risk at all."""
     if not rows:
         return []
 
@@ -574,28 +610,18 @@ def _position_on_pitch(
     row_count = len(rows)
     for i, (row_type, row) in enumerate(rows):
         t = i / (row_count - 1) if row_count > 1 else 0.0
-        # 94/6 with a 39-point span, not 92/8 with 38: a marker (photo + name
-        # + role + stat) is taller than the gap a tight spread leaves between
-        # SAME-team adjacent rows (confirmed live: a 5-row team's own front
-        # row circle overlapping its own midfield row), independent of the
-        # cross-team jitter below, which only fixes horizontal alignment at
-        # the halfway line, not a team's own internal row spacing.
+        # 94/6 with a 39-point span: a marker (photo + name + role + stat)
+        # is taller than a tighter spread leaves room for between SAME-team
+        # adjacent rows (confirmed live: a 5-row team's own front row circle
+        # overlapping its own midfield row). match.html sizes the pitch's
+        # actual height per-match (see _match_lineups) so this percentage
+        # spread clears a real pixel target regardless of row count, instead
+        # of assuming every match is the worst-case 5-row shape.
         top_pct = (94 - t * 39) if is_home else (6 + t * 39)
         k = len(row)
         labels = _role_labels(row_type, k)
-        # Both teams' frontmost row uses the identical left_pct formula, so
-        # whenever they carry the same player count — two lone strikers is
-        # the common case, but two 2-striker systems land the same way —
-        # they sit at the EXACT same x. That's the real cause of a photo
-        # covering another player's score at the halfway line: confirmed
-        # live, two central strikers were both dead-centered at 50%, so no
-        # amount of vertical spacing alone fixes it without an impractically
-        # tall pitch (tried 3/8 aspect-ratio — cleared it, but felt absurdly
-        # stretched). A fixed horizontal nudge on the away side's frontmost
-        # row breaks that alignment directly, cheaply, and only touches the
-        # one row where it matters — the rest of the shape is untouched.
         is_frontmost = i == row_count - 1
-        jitter = 12.0 if (not is_home and is_frontmost) else 0.0
+        jitter = 16.0 if (jitter_frontmost and not is_home and is_frontmost) else 0.0
         for j, player in enumerate(row):
             left_pct = 10 + (80 / k) * (j + 0.5) + jitter
             left_pct = max(8.0, min(92.0, left_pct))

@@ -121,7 +121,7 @@
     <span class="truncate max-w-[50%]">{{ away.canonical_name }}</span>
     {% if lineups.away.formation %}<span class="font-mono font-normal text-gray-400 dark:text-gray-500">{{ lineups.away.formation }}</span>{% endif %}
   </div>
-  <div class="relative w-full max-w-xs sm:max-w-sm md:max-w-md lg:max-w-lg mx-auto" style="aspect-ratio: 4 / 9;">
+  <div class="relative w-full max-w-xs sm:max-w-sm md:max-w-md lg:max-w-lg mx-auto" style="aspect-ratio: {{ lineups.pitch_aspect_ratio }};">
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="absolute inset-0 w-full h-full rounded-xl">
       <rect x="0" y="0" width="100" height="50" fill="#1c8a44"/>
       <rect x="0" y="50" width="100" height="50" fill="#188039"/>

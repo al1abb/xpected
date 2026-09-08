@@ -4,7 +4,7 @@
     {
       "name": "xpected-dev",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8901"],
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8901"],
       "port": 8901
     }
   ]
