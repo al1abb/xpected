@@ -29,7 +29,7 @@
      the exact version the CDN was serving — and committed, since Vercel's
      Python runtime does not run npm. Regenerate after adding new utility
      classes to a template. #}
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_version('app.css') }}">
   <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
   <style>
     ::-webkit-scrollbar { height: 6px; width: 6px; }

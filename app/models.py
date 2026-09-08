@@ -152,6 +152,9 @@ class Match(Base):
 
     source: Mapped[str] = mapped_column(String(32))  # 'football_data' | 'api_football'
     af_fixture_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
+    bbs_match_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)  # bigballsdata.com uuid
+    home_formation: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "4-2-3-1", from Lineup sync
+    away_formation: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     competition: Mapped[Competition] = relationship(back_populates="matches")
     home_team: Mapped[Team] = relationship(foreign_keys=[home_team_id])
@@ -282,6 +285,88 @@ class SquadPlayer(Base):
     fd_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
+    team: Mapped[Team] = relationship()
+
+
+class Lineup(Base):
+    """Per-match starting XI + bench from bigballsdata.com — the first source
+    found (Sept 2026) with real per-match squad data, not just the ~49
+    scorers/league SquadPlayer/PlayerStat are limited to. See
+    ingest/bigballs.py for coverage: 5 of this app's 12 competitions, current
+    season + 1 prior only (the free plan's own history wall), and only for
+    matches bigballsdata.com actually has a lineup for (confirmed live at
+    ~9% of ALL matches in their DB, but dense within the free tier's
+    accessible window — spot-checked as effectively complete there).
+
+    Enrichment only, same pattern as ingest/api_football.py's crest sync:
+    resolved against an EXISTING Match row via the natural key, never used to
+    invent one. A match bigballsdata.com doesn't cover, or whose teams don't
+    resolve, simply has no rows here — never a blank/wrong lineup.
+
+    `bbs_player_id` is null on ~7% of entries (confirmed live) — a player
+    named but not linkable to any other bigballsdata.com endpoint. Kept
+    anyway (still a real, displayable name), but never something a model
+    feature should join on.
+
+    `order_index` preserves the source's own within-side list order — the API
+    gives no explicit tactical slot (e.g. which of 4 defenders is the left
+    back), so the pitch-diagram layout in app/main.py:_match_lineups leans on
+    list order + Match.home_formation/away_formation as its best-effort
+    placement, not a guaranteed-correct one."""
+
+    __tablename__ = "lineups"
+    __table_args__ = (
+        UniqueConstraint("match_id", "team_id", "bbs_player_id", name="uq_lineup_match_team_player"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    player_name: Mapped[str] = mapped_column(String(128))
+    position: Mapped[str | None] = mapped_column(String(8), nullable=True)  # bigballsdata's own G/D/M/F
+    jersey_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    starter: Mapped[bool] = mapped_column(Boolean)
+    order_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bbs_player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    match: Mapped[Match] = relationship()
+    team: Mapped[Team] = relationship()
+
+
+class PlayerMatchStat(Base):
+    """Per-match player box score from bigballsdata.com (same source/coverage
+    as Lineup, see its docstring) — every player who featured, not just
+    scorers. goals/assists/minutes/rating are pulled into typed columns
+    because a future availability-discount model feature (see
+    future-plans.md: "Player-level data") would query them; the API returns
+    ~20 more fields as a free-form stat-key dict (duels, passes, interceptions,
+    ...) kept as-is in `extra` since which of those matter isn't decided yet.
+
+    Not wired into model/predict.py — ingest only, same "display/reference
+    data first" stance as SquadPlayer and PlayerStat. model/form.py's
+    docstring still holds: nothing here feeds a prediction until a real
+    availability-adjustment design exists."""
+
+    __tablename__ = "player_match_stats"
+    __table_args__ = (
+        UniqueConstraint("match_id", "team_id", "bbs_player_id", name="uq_pms_match_team_player"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    player_name: Mapped[str] = mapped_column(String(128))
+    bbs_player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    goals: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assists: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    headshot_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    match: Mapped[Match] = relationship()
     team: Mapped[Team] = relationship()
 
 

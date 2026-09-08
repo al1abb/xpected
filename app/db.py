@@ -38,7 +38,32 @@ def get_session() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
+    from sqlalchemy import inspect, text
+
     from app import models  # noqa: F401  (registers tables on Base.metadata)
     from app.models import Base
 
     Base.metadata.create_all(bind=engine)
+
+    # `create_all` only creates missing TABLES, never adds columns to one that
+    # already exists — this project has no migration tool, so a column added
+    # to an existing table needs its own one-line bootstrap here, guarded to
+    # run at most once per column. Add a tuple below whenever a new column
+    # lands on a pre-existing table (new tables need nothing — create_all
+    # handles those).
+    _ADDED_COLUMNS = [
+        ("matches", "bbs_match_id", "VARCHAR(36)"),
+        ("matches", "home_formation", "VARCHAR(16)"),
+        ("matches", "away_formation", "VARCHAR(16)"),
+        ("lineups", "order_index", "INTEGER"),
+        ("player_match_stats", "headshot_url", "VARCHAR(256)"),
+    ]
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table, column, coltype in _ADDED_COLUMNS:
+        if table not in existing_tables:
+            continue
+        existing_columns = {c["name"] for c in inspector.get_columns(table)}
+        if column not in existing_columns:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))

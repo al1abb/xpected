@@ -16,10 +16,12 @@ from app.models import (
     Competition,
     EloRating,
     IngestLog,
+    Lineup,
     LiveMatchState,
     Match,
     ModelRun,
     NewsItem,
+    PlayerMatchStat,
     PlayerStat,
     Prediction,
     SquadPlayer,
@@ -42,6 +44,24 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 templates.env.globals["competition_logo"] = competition_logo
 templates.env.globals["competition_short"] = competition_short
 templates.env.globals["country_flag"] = country_flag
+
+_STATIC_DIR = BASE_DIR / "public" / "static"
+
+
+def _asset_version(filename: str) -> int:
+    """Mtime as a cache-busting query param. Local dev has no CDN invalidation
+    in front of /static (see the mount's docstring below), so a browser that
+    already loaded app.css keeps serving it from cache after a rebuild —
+    confirmed live: a Tailwind rebuild alone (no .py change, so no reload)
+    left stale CSS in place until this existed. Reads the file fresh on every
+    render rather than caching the value at import time, since exactly that
+    scenario — editing templates/CSS while the server keeps running — is the
+    one this exists to fix."""
+    path = _STATIC_DIR / filename
+    return int(path.stat().st_mtime) if path.exists() else 0
+
+
+templates.env.globals["asset_version"] = _asset_version
 
 # Competitions that get a custom color treatment on their competition page —
 # see the CSS variable layer in base.html (.theme-ucl). One dict entry + one
@@ -413,6 +433,158 @@ def _head_to_head(session: Session, team_a: int, team_b: int, *, limit: int = 10
             }
         )
     return rows
+
+
+def _match_lineups(session: Session, match: Match) -> dict | None:
+    """Starting XI (placed on a pitch diagram) + bench for both sides, from
+    ingest/bigballs.py — covers 5 competitions, current season + 1 prior only
+    (see that module's docstring). Returns None when this match has no
+    lineup, which is most matches today: only ~100 finished matches across
+    the whole DB have one as of the first sync. The template renders nothing
+    at all in that case, same "don't show an empty state for something most
+    matches will never have" call as the rest of this page.
+
+    Pitch placement is best-effort, not exact: the source gives a formation
+    string (e.g. "4-2-3-1") and each player's position group (G/D/M/F) plus
+    its own within-side list order, but no explicit tactical slot. See
+    _position_on_pitch's docstring for exactly what's inferred vs. assumed."""
+    rows = session.query(Lineup).filter_by(match_id=match.id).all()
+    if not rows:
+        return None
+
+    stat_rows = session.query(PlayerMatchStat).filter_by(match_id=match.id).all()
+    # bigballsdata.com's /lineups and /stats calls name the same player
+    # differently ("F. Buonanotte" vs "Facundo Buonanotte", confirmed live) —
+    # matching on name alone silently drops the photo/goals/rating for anyone
+    # renamed between the two endpoints. `bbs_player_id` is stable across
+    # both, so it's the primary key here; name is only a fallback for the
+    # ~7% of Lineup rows with no id at all (see Lineup's docstring).
+    stats_by_id = {s.bbs_player_id: s for s in stat_rows if s.bbs_player_id}
+    stats_by_name = {(s.team_id, s.player_name): s for s in stat_rows}
+
+    def _stat_for(team_id: int, player: Lineup) -> PlayerMatchStat | None:
+        if player.bbs_player_id and player.bbs_player_id in stats_by_id:
+            return stats_by_id[player.bbs_player_id]
+        return stats_by_name.get((team_id, player.player_name))
+
+    def _side(team_id: int, formation: str | None, is_home: bool) -> dict:
+        players = [r for r in rows if r.team_id == team_id]
+        starters = [p for p in players if p.starter]
+        bench = sorted((p for p in players if not p.starter), key=lambda r: r.order_index or 0)
+        positioned = _position_on_pitch(starters, formation, is_home=is_home)
+        return {
+            "formation": formation,
+            "pitch": [
+                {**_lineup_row(p, _stat_for(team_id, p)), "top_pct": pos[0], "left_pct": pos[1]}
+                for p, pos in positioned
+            ],
+            "bench": [_lineup_row(p, _stat_for(team_id, p)) for p in bench],
+        }
+
+    return {
+        "home": _side(match.home_team_id, match.home_formation, is_home=True),
+        "away": _side(match.away_team_id, match.away_formation, is_home=False),
+    }
+
+
+def _split_midfield_rows(midfielders: list[Lineup], formation: str | None) -> list[list[Lineup]]:
+    """Split one flat list of midfielders into 1-2 rows (e.g. a double pivot
+    behind an attacking three) using the formation string's middle numbers —
+    "4-2-3-1" implies a 2-row split of sizes [2, 3]. Falls back to a single
+    row whenever the formation string is missing, malformed, or its middle
+    numbers don't sum to the actual midfielder count (confirmed live: they
+    always do when both are present, but a mismatch means guessing the split
+    would be worse than not splitting at all)."""
+    if not formation or not midfielders:
+        return [midfielders] if midfielders else []
+    try:
+        parts = [int(x) for x in formation.split("-")]
+    except ValueError:
+        return [midfielders]
+    mid_counts = parts[1:-1]
+    if not mid_counts or sum(mid_counts) != len(midfielders):
+        return [midfielders]
+    rows, i = [], 0
+    for count in mid_counts:
+        rows.append(midfielders[i : i + count])
+        i += count
+    return rows
+
+
+def _position_on_pitch(
+    starters: list[Lineup], formation: str | None, *, is_home: bool
+) -> list[tuple[Lineup, tuple[float, float]]]:
+    """(player, (top_pct, left_pct)) for every starter, laid out on a single
+    vertical pitch shared by both teams (home defends/attacks from the
+    bottom, away mirrored from the top, meeting at the halfway line) —
+    the standard lineup-graphic convention.
+
+    Row assignment: group by position code (G/D/M/F, from the source
+    directly), one row each for G/D/F and 1-2 rows for M (see
+    _split_midfield_rows), ordered back-to-front. Within a row, players keep
+    the source's own order_index — the closest thing to a left-to-right
+    tactical order this API exposes; it is NOT a verified "this player is
+    the left-back" guarantee, just the best available signal. A team with
+    an unusual position mix (e.g. a back-3 mislabeled by the source) still
+    renders — it just won't look like a textbook formation shape."""
+    by_position: dict[str, list[Lineup]] = {"G": [], "D": [], "M": [], "F": []}
+    for p in starters:
+        by_position.setdefault(p.position or "M", []).append(p)
+    for group in by_position.values():
+        group.sort(key=lambda r: r.order_index if r.order_index is not None else 0)
+
+    rows: list[list[Lineup]] = []
+    if by_position["G"]:
+        rows.append(by_position["G"])
+    if by_position["D"]:
+        rows.append(by_position["D"])
+    rows.extend(_split_midfield_rows(by_position["M"], formation))
+    if by_position["F"]:
+        rows.append(by_position["F"])
+    if not rows:
+        return []
+
+    positioned: list[tuple[Lineup, tuple[float, float]]] = []
+    row_count = len(rows)
+    for i, row in enumerate(rows):
+        t = i / (row_count - 1) if row_count > 1 else 0.0
+        # 10%/90% rather than the pitch's true edge: the marker (photo +
+        # name + stat row) is taller than the point it's centered on, so a
+        # goalkeeper row placed right at the edge renders partly outside the
+        # pitch background — confirmed live, this margin is sized for the
+        # smallest rendered pitch width (max-w-xs).
+        top_pct = (90 - t * 34) if is_home else (10 + t * 34)
+        k = len(row)
+        for j, player in enumerate(row):
+            left_pct = 10 + (80 / k) * (j + 0.5)
+            positioned.append((player, (round(top_pct, 1), round(left_pct, 1))))
+    return positioned
+
+
+def _lineup_row(player: Lineup, stat: PlayerMatchStat | None) -> dict:
+    extra = (stat.extra if stat else None) or {}
+    return {
+        "name": player.player_name,
+        "position": player.position,
+        "jersey_number": player.jersey_number,
+        "goals": stat.goals if stat else None,
+        "assists": stat.assists if stat else None,
+        "rating": stat.rating if stat else None,
+        "headshot_url": stat.headshot_url if stat else None,
+        # Not typed columns — extra's raw values are strings straight from the
+        # API ("0"/"1"), and yellow/red cards are display-only badges, not
+        # anything queried elsewhere, so parsing here rather than in the
+        # schema keeps PlayerMatchStat's typed columns to what's actually used.
+        "yellow_cards": _int_or_zero(extra.get("yellow_cards")),
+        "red_cards": _int_or_zero(extra.get("red_cards")),
+    }
+
+
+def _int_or_zero(value: str | None) -> int:
+    try:
+        return int(value) if value is not None else 0
+    except ValueError:
+        return 0
 
 
 def _head_to_head_tally(session: Session, team_a: int, team_b: int) -> dict:
@@ -1020,6 +1192,7 @@ def match_page(request: Request, match_id: int):
         home_form = _team_form(session, home.id, before=cutoff)
         away_form = _team_form(session, away.id, before=cutoff)
         h2h = _head_to_head(session, home.id, away.id)
+        lineups = _match_lineups(session, match)
         # "Going into this match" grade, not "as of right now" — meaningful
         # for a finished match too, not just an upcoming one.
         home_form_grade = form_grade(session, home.id, as_of=cutoff)
@@ -1051,6 +1224,7 @@ def match_page(request: Request, match_id: int):
             head_to_head=h2h,
             market=market,
             news=news,
+            lineups=lineups,
         )
         ctx["body_theme_class"] = COMPETITION_THEME_CLASS.get(competition.slug if competition else "", "")
         return templates.TemplateResponse(request, "match.html", ctx)

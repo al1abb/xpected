@@ -107,6 +107,79 @@
   {% endif %}
 </div>
 
+{% if lineups %}
+{% macro _goal_ball() %}<svg viewBox="0 0 24 24" class="h-4 w-4 sm:h-[1.1rem] sm:w-[1.1rem] shrink-0" aria-label="Goal"><circle cx="12" cy="12" r="10" fill="white" stroke="black" stroke-width="1.8"/><path d="M12 5.8l4 2.9-1.5 4.6h-5l-1.5-4.6 4-2.9z" fill="black"/></svg>{% endmacro %}
+{% macro _card(color, label) %}<span class="inline-block h-3 w-2 sm:h-3.5 sm:w-2.5 rounded-[1.5px] ring-1 ring-black/30 {{ color }}" title="{{ label }}"></span>{% endmacro %}
+<div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5 mb-6">
+  <h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-1">Lineups</h2>
+  <p class="text-xs text-gray-400 dark:text-gray-400 mb-4">
+    Reference only — not used by the prediction model. Positions are inferred from the source's own player order, not a confirmed tactical slot.
+  </p>
+
+  <div class="flex items-center justify-center gap-1.5 mb-2 text-xs sm:text-sm font-semibold text-gray-600 dark:text-gray-300">
+    {{ team_badge(away.canonical_name, away.logo_url, away_color, 5) }}
+    <span class="truncate max-w-[50%]">{{ away.canonical_name }}</span>
+    {% if lineups.away.formation %}<span class="font-mono font-normal text-gray-400 dark:text-gray-500">{{ lineups.away.formation }}</span>{% endif %}
+  </div>
+  <div class="relative w-full max-w-xs sm:max-w-sm md:max-w-md lg:max-w-lg mx-auto" style="aspect-ratio: 3 / 4;">
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="absolute inset-0 w-full h-full rounded-xl">
+      <rect x="0" y="0" width="100" height="50" fill="#1c8a44"/>
+      <rect x="0" y="50" width="100" height="50" fill="#188039"/>
+      <g stroke="rgba(255,255,255,0.5)" stroke-width="0.4" fill="none">
+        <rect x="1.5" y="1.5" width="97" height="97"/>
+        <line x1="1.5" y1="50" x2="98.5" y2="50"/>
+        <circle cx="50" cy="50" r="8"/>
+        <rect x="26" y="1.5" width="48" height="16"/>
+        <rect x="38" y="1.5" width="24" height="6"/>
+        <rect x="26" y="82.5" width="48" height="16"/>
+        <rect x="38" y="94.5" width="24" height="6"/>
+      </g>
+    </svg>
+
+    {% for side_key, side, ring_color in [('away', lineups.away, away_color), ('home', lineups.home, home_color)] %}
+    {% for p in side.pitch %}
+    <div class="absolute flex flex-col items-center gap-1" style="top: {{ p.top_pct }}%; left: {{ p.left_pct }}%; transform: translate(-50%, -50%); width: 5rem;">
+      <div class="relative h-9 w-9 sm:h-11 sm:w-11 shrink-0 rounded-full overflow-hidden shadow" style="border: 2px solid {{ ring_color }};">
+        {% if p.headshot_url %}
+        <img src="{{ p.headshot_url }}" alt="" class="h-full w-full object-cover bg-gray-700" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <span class="hidden h-full w-full items-center justify-center text-xs font-bold text-white bg-gray-700 leading-none">{{ p.jersey_number or '' }}</span>
+        {% else %}
+        <span class="flex h-full w-full items-center justify-center text-xs font-bold text-white bg-gray-700 leading-none">{{ p.jersey_number or '' }}</span>
+        {% endif %}
+      </div>
+      <span class="text-[0.65rem] sm:text-xs leading-tight text-center text-white font-semibold truncate max-w-full rounded px-1 bg-black/60" title="{{ p.name }}">{{ p.name.split(' ')[-1] }}</span>
+      {% if p.goals or p.assists or p.yellow_cards or p.red_cards or p.rating %}
+      <div class="flex items-center gap-1 flex-wrap justify-center text-[0.68rem] sm:text-[0.78rem] font-bold leading-none text-white tabular-nums rounded px-1 py-0.5 bg-black/60">
+        {% if p.goals %}<span class="inline-flex items-center gap-0.5">{{ _goal_ball() }}{% if p.goals > 1 %}{{ p.goals }}{% endif %}</span>{% endif %}
+        {% if p.assists %}<span>{{ p.assists }}A</span>{% endif %}
+        {% if p.yellow_cards %}{{ _card('bg-yellow-400', 'Yellow card') }}{% endif %}
+        {% if p.red_cards %}{{ _card('bg-red-600', 'Red card') }}{% endif %}
+        {% if p.rating %}<span class="text-gray-200">{{ '%.1f'|format(p.rating) }}</span>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endfor %}
+  </div>
+  <div class="flex items-center justify-center gap-1.5 mt-2 mb-5 text-xs sm:text-sm font-semibold text-gray-600 dark:text-gray-300">
+    {{ team_badge(home.canonical_name, home.logo_url, home_color, 5) }}
+    <span class="truncate max-w-[50%]">{{ home.canonical_name }}</span>
+    {% if lineups.home.formation %}<span class="font-mono font-normal text-gray-400 dark:text-gray-500">{{ lineups.home.formation }}</span>{% endif %}
+  </div>
+
+  <div class="grid sm:grid-cols-2 gap-6">
+    {% for side, team in [(lineups.home, home), (lineups.away, away)] %}
+    {% if side.bench %}
+    <div>
+      <h4 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1">{{ team.canonical_name }} · Bench</h4>
+      <p class="text-xs text-gray-400 dark:text-gray-500 leading-relaxed">{{ side.bench | map(attribute='name') | join(', ') }}</p>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="grid sm:grid-cols-2 gap-4 mb-6">
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
     <h2 class="flex items-center gap-2 text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">
