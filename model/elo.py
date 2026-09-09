@@ -22,9 +22,16 @@ an affine transform fit against teams in the same domestic league that ARE
 covered. This preserves "which of our own teams is better" (real results)
 while fixing "how does that compare across leagues" (ClubElo's job).
 
-Fails soft: if ClubElo is unreachable, `fetch_snapshot` returns {} and every
-team keeps its plain internal rating — today's pre-anchor behaviour — rather
-than the whole prediction pipeline breaking.
+Fails soft, but not blind: if ClubElo is unreachable, `fetch_snapshot` first
+falls back to the most recent previously-persisted snapshot on file (see
+ingest/clubelo.py's _last_known_snapshot) rather than dropping the anchor
+outright — a multi-day outage (confirmed live: api.clubelo.com returned
+HTTP 502 on every endpoint for 9+ consecutive days starting 2026-09-01) was
+found to silently reproduce the exact failure mode described above, because
+the old behaviour reverted every team to unanchored internal ratings the
+moment the daily fetch failed once. Only falls through to unanchored
+ratings (`fetch_snapshot` returns {}) if nothing usable is on file at all,
+e.g. within _STALE_FALLBACK_MAX_DAYS.
 
 Internal replay formula: standard logistic expected-score with a fixed
 home-advantage offset, K scaled by margin of victory (the widely-used World

@@ -24,6 +24,7 @@ import csv
 import datetime as dt
 import io
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import CLUBELO_API_BASE
@@ -41,6 +42,21 @@ SOURCE = "clubelo"
 # semantics ever change).
 _PAST_DATE_MAX_AGE_HOURS = 24 * 365 * 10
 _TODAY_MAX_AGE_HOURS = 24
+
+# How stale a previously-persisted snapshot is allowed to be before it's no
+# longer trusted as a stand-in during an API outage (see _last_known_snapshot).
+# Confirmed necessary in practice: api.clubelo.com returned HTTP 502 on every
+# endpoint for 9+ consecutive days starting 2026-09-01, during which
+# model/elo.py's old fail-soft behaviour (silently dropping the anchor
+# entirely) let Porto and Manchester City's blended ratings drift to within
+# 12 points of each other despite ClubElo's own last-known values (Aug 31)
+# putting Man City ~165 points clear — enough to flip a real Champions
+# League prediction (Porto favoured to win, at 44.7% vs Man City's 28.6%,
+# when the correct anchored numbers favoured Man City 48.4% to 25.5%; actual
+# result: Man City won 0-2). ClubElo moves slowly week to week, so a
+# snapshot up to a month old is still a far better cross-league anchor than
+# none at all.
+_STALE_FALLBACK_MAX_DAYS = 30
 
 
 def parse_ranking_csv(text: str) -> list[dict]:
@@ -75,14 +91,36 @@ def _resolve_club(session: Session, club_name: str, *, context: str, pool: dict)
     return resolve_existing_team(session, club_name, SOURCE, context=context, pool=pool)
 
 
+def _last_known_snapshot(session: Session, on_date: dt.date) -> dict[int, float]:
+    """Fallback used when the live fetch fails: reuse the most recently
+    persisted `source='clubelo'` snapshot on or before `on_date` (never
+    after — a live outage must never pull future data into a historical
+    backtest cutoff), as long as it's within _STALE_FALLBACK_MAX_DAYS.
+    Empty dict if nothing usable is on file, same as a hard failure used to
+    return — callers already handle that by falling back to unanchored
+    internal ratings."""
+    latest_date = (
+        session.query(func.max(EloRating.as_of_date))
+        .filter(EloRating.source == SOURCE, EloRating.as_of_date <= on_date)
+        .scalar()
+    )
+    if latest_date is None or (on_date - latest_date).days > _STALE_FALLBACK_MAX_DAYS:
+        return {}
+    rows = session.query(EloRating.team_id, EloRating.elo).filter_by(source=SOURCE, as_of_date=latest_date).all()
+    return dict(rows)
+
+
 def fetch_snapshot(session: Session, on_date: dt.date) -> dict[int, float]:
     """{team_id: elo} as ClubElo rated it on `on_date` (or the most recent date
     on/before it that ClubElo published — its `/YYYY-MM-DD` endpoint already
     resolves to the latest snapshot at or before the requested date).
 
-    Disk-cached: past dates forever, today for 24h. Fails soft — an empty dict
-    on any network error, so callers (model/elo.py) can fall back to
-    internal-only ratings rather than break the whole prediction pipeline.
+    Disk-cached: past dates forever, today for 24h. On a network error, falls
+    back to the last successfully-persisted snapshot on file rather than
+    dropping the anchor entirely — see _last_known_snapshot and
+    _STALE_FALLBACK_MAX_DAYS for why a stale anchor beats no anchor. Only
+    returns {} (letting callers fall back to unanchored internal ratings) if
+    nothing usable is on file at all, e.g. a brand-new database.
     """
     today = dt.date.today()
     max_age = _TODAY_MAX_AGE_HOURS if on_date >= today else _PAST_DATE_MAX_AGE_HOURS
@@ -91,7 +129,7 @@ def fetch_snapshot(session: Session, on_date: dt.date) -> dict[int, float]:
     try:
         text = fetch_text(url, subdir="clubelo", max_age_hours=max_age)
     except RuntimeError:
-        return {}
+        return _last_known_snapshot(session, on_date)
 
     # Built once and reused for every row below — rebuilding it per row (as a
     # naive per-name resolve would) means re-querying and re-scoring against
