@@ -172,13 +172,14 @@
         {% endif %}
       </div>
       <span class="text-[0.62rem] sm:text-[0.72rem] leading-tight text-center text-white font-semibold truncate max-w-full rounded px-1 bg-black/60" title="{{ p.name }} ({{ p.role }})">{{ p.surname }} <span class="font-normal text-gray-300">{{ p.role }}</span></span>
-      {% if p.goals or p.assists or p.yellow_cards or p.red_cards or p.rating %}
+      {% if p.goals or p.assists or p.yellow_cards or p.red_cards or p.rating or p.elo_rating %}
       <div class="flex items-center gap-1 flex-wrap justify-center text-[0.68rem] sm:text-[0.78rem] font-bold leading-none text-white tabular-nums rounded px-1 py-0.5 bg-black/60">
         {% if p.goals %}<span class="inline-flex items-center gap-0.5">{{ _goal_icon() }}{% if p.goals > 1 %}{{ p.goals }}{% endif %}</span>{% endif %}
         {% if p.assists %}<span>{{ p.assists }}A</span>{% endif %}
         {% if p.yellow_cards %}{{ _card('bg-yellow-400', 'Yellow card') }}{% endif %}
         {% if p.red_cards %}{{ _card('bg-red-600', 'Red card') }}{% endif %}
-        {% if p.rating %}<span class="text-gray-200">{{ '%.1f'|format(p.rating) }}</span>{% endif %}
+        {% if p.rating %}<span class="text-gray-200" title="Match rating">{{ '%.1f'|format(p.rating) }}</span>{% endif %}
+        {% if p.elo_rating %}<span class="text-indigo-300" title="Player Elo rating">{{ '%.0f'|format(p.elo_rating) }}</span>{% endif %}
       </div>
       {% endif %}
     </div>

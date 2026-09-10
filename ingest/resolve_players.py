@@ -194,23 +194,39 @@ def resolve_or_create_player(
     return player
 
 
+
+# football-data.org's own squad position vocabulary ("Goalkeeper",
+# "Defence", "Midfield", "Offence") mapped onto bigballsdata's coarse G/D/M/F
+# codes — the same ones Player.primary_position and Lineup.position already
+# use, so a player seeded here needs no separate vocabulary anywhere else
+# that reads primary_position (e.g. model/player_elo.py's EAR grouping).
+_SQUAD_POSITION_TO_CODE = {"Goalkeeper": "G", "Defence": "D", "Midfield": "M", "Offence": "F"}
+
+
 def seed_players_from_squads(session: Session) -> int:
-    """One-time/idempotent: create a Player + a 'football_data_org'
-    PlayerAlias for every SquadPlayer not already aliased, seeding real full
-    names and dates of birth so abbreviated lineup names ('M. Hermansen')
-    have a full-name anchor to match against on the same team (see
-    resolve_or_create_player's name channel). Safe to call repeatedly —
-    already-aliased squad players are skipped, not re-created."""
+    """Create a Player + a 'football_data_org' PlayerAlias for every
+    SquadPlayer not already aliased, seeding real full names and dates of
+    birth so abbreviated lineup names ('M. Hermansen') have a full-name
+    anchor to match against on the same team (see resolve_or_create_player's
+    name channel). Safe to call repeatedly — an already-aliased squad player
+    is never re-created, but its position is still backfilled onto the
+    existing Player if that Player doesn't have one yet, since running this
+    again after a season's worth of lineup-only resolutions is exactly how a
+    thin-history Player first gets a known position (needed for
+    model/player_elo.py's EAR, which is position-grouped)."""
     created = 0
     for squad_player in session.query(SquadPlayer).all():
+        position_code = _SQUAD_POSITION_TO_CODE.get(squad_player.position or "")
         existing = (
             session.query(PlayerAlias)
             .filter_by(alias=squad_player.name, source="football_data_org", team_id=squad_player.team_id)
             .one_or_none()
         )
         if existing is not None:
+            if position_code and existing.player.primary_position is None:
+                existing.player.primary_position = position_code
             continue
-        resolve_or_create_player(
+        player = resolve_or_create_player(
             session,
             squad_player.name,
             "football_data_org",
@@ -218,5 +234,31 @@ def seed_players_from_squads(session: Session) -> int:
             date_of_birth=squad_player.date_of_birth,
             context=f"seeded from squad_players id={squad_player.id}",
         )
+        if position_code and player.primary_position is None:
+            player.primary_position = position_code
         created += 1
+    session.commit()
     return created
+
+
+def current_team_for_players(session: Session, player_ids) -> dict[int, int]:
+    """{player_id: team_id} from each player's most recent PlayerAlias (any
+    source) that carries a team_id — a rough "current club" proxy, exactly
+    right from the moment a transfer's first synced appearance or lineup
+    lands, stale between then and now otherwise. Same "ascending date, last
+    write wins" idiom as model/elo.py::load_persisted_ratings, for the same
+    reason: simplest correct way to prefer the newest of several dated rows
+    without a separate MAX-date subquery."""
+    player_ids = list(player_ids)
+    if not player_ids:
+        return {}
+    rows = (
+        session.query(PlayerAlias.player_id, PlayerAlias.team_id, PlayerAlias.created_at)
+        .filter(PlayerAlias.player_id.in_(player_ids), PlayerAlias.team_id.isnot(None))
+        .order_by(PlayerAlias.created_at.asc())
+        .all()
+    )
+    result: dict[int, int] = {}
+    for player_id, team_id, _created_at in rows:
+        result[player_id] = team_id
+    return result

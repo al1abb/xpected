@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+import statistics
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -336,3 +337,46 @@ def prune_player_ratings(session: Session) -> int:
         session.delete(row)
     session.commit()
     return deleted
+
+
+def compute_ear(
+    ratings: dict[int, float],
+    player_position: dict[int, str | None],
+    player_competition: dict[int, int | None],
+) -> dict[int, float]:
+    """Elo Above Replacement: each player's rating minus the median rating
+    among every OTHER rated player sharing their position within their same
+    competition — "replacement level" for that specific slot, the same idea
+    baseball's WAR is built on. Median rather than mean so one outlier
+    superstar doesn't drag the bar up for everyone else at that position.
+
+    Grouped by competition, not globally, for the same reason model/elo.py
+    anchors ratings onto ClubElo's cross-league scale rather than comparing
+    raw internal numbers across leagues directly: a "replacement-level"
+    midfielder in the Premier League and one in the Azerbaijan Premyer Liqa
+    are not interchangeable baselines.
+
+    Only meaningful for a player with both a known position
+    (Player.primary_position — populated from lineup data and
+    ingest/resolve_players.py's squad-position mapping, so absent for
+    anyone with neither) and a known current competition (via their
+    current team's primary league). Missing either: simply absent from the
+    result, never a misleading 0."""
+    buckets: dict[tuple[int, str], list[float]] = {}
+    for player_id, rating in ratings.items():
+        position = player_position.get(player_id)
+        competition_id = player_competition.get(player_id)
+        if position is None or competition_id is None:
+            continue
+        buckets.setdefault((competition_id, position), []).append(rating)
+
+    replacement_level = {key: statistics.median(values) for key, values in buckets.items()}
+
+    ear: dict[int, float] = {}
+    for player_id, rating in ratings.items():
+        position = player_position.get(player_id)
+        competition_id = player_competition.get(player_id)
+        if position is None or competition_id is None:
+            continue
+        ear[player_id] = rating - replacement_level[(competition_id, position)]
+    return ear

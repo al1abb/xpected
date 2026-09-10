@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% from "_badge.html" import team_badge %}
+{% block title %}Player Ratings · Xpected{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold tracking-tight mb-1">Player Ratings</h1>
+<p class="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-2xl">
+  Elo ratings for individual players, replayed from real match appearances (see
+  <a class="underline hover:text-indigo-500" href="/accuracy">Accuracy</a> for how this feeds predictions). A rating
+  moves with the player across a transfer, unlike a club's own rating — the whole point of building this at the
+  player level. Coverage is still shallow and growing: a multi-day historical backfill runs automatically in the
+  background, so this list deepens over time rather than all at once.
+</p>
+
+{% if not players %}
+<div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-8 text-center text-sm text-gray-500">
+  No player ratings on file yet.
+</div>
+{% else %}
+<p class="text-xs text-gray-400 mb-3">{{ total_rated }} players rated in total — showing the top {{ players|length }}.</p>
+<div class="overflow-x-auto rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-xs font-bold uppercase tracking-widest text-gray-400 border-b border-gray-100 dark:border-gray-800">
+        <th class="px-3 py-2 text-right w-8">#</th>
+        <th class="px-3 py-2">Player</th>
+        <th class="px-3 py-2">Team</th>
+        <th class="px-3 py-2 text-right">Pos</th>
+        <th class="px-3 py-2 text-right">Apps</th>
+        <th class="px-3 py-2 text-right">EAR</th>
+        <th class="px-3 py-2 text-right">Elo</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+      {% for row in players %}
+      <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+        <td class="px-3 py-2 text-right text-gray-400 tabular-nums">{{ row.rank }}</td>
+        <td class="px-3 py-2 font-medium truncate">{{ row.player.canonical_name }}</td>
+        <td class="px-3 py-2">
+          {% if row.team %}
+          <a href="/team/{{ row.team.id }}" class="flex items-center gap-2 truncate hover:text-indigo-600 dark:hover:text-indigo-400">
+            {{ team_badge(row.team.canonical_name, row.team.logo_url, row.team.primary_color, 5) }}
+            <span class="truncate">{{ row.team.canonical_name }}</span>
+          </a>
+          {% else %}
+          <span class="text-gray-400">—</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-right text-gray-400">{{ row.player.primary_position or "—" }}</td>
+        <td class="px-3 py-2 text-right tabular-nums text-gray-500 dark:text-gray-400">{{ row.appearances }}</td>
+        <td class="px-3 py-2 text-right tabular-nums {{ 'text-emerald-600 dark:text-emerald-400' if row.ear and row.ear > 0 else ('text-red-500 dark:text-red-400' if row.ear and row.ear < 0 else 'text-gray-400') }}">
+          {% if row.ear is not none %}{{ '%+.0f'|format(row.ear) }}{% else %}—{% endif %}
+        </td>
+        <td class="px-3 py-2 text-right font-bold font-mono tabular-nums">{{ '%.0f'|format(row.rating) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="text-xs text-gray-400 mt-3 max-w-2xl">
+  EAR (Elo Above Replacement): a player's rating minus the median rating among others at the same position in the
+  same competition — how much they add over a like-for-like replacement. Shown only where both a position and a
+  current competition are known.
+</p>
+{% endif %}
+{% endblock %}

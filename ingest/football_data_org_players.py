@@ -30,7 +30,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Competition, IngestLog, PlayerStat, SquadPlayer
+from app.models import Coach, Competition, IngestLog, PlayerStat, SquadPlayer, Team
 from ingest.cache import cache_age_hours, fetch_text
 from ingest.football_data_org import BASE, CREST_COMPETITION_CODES, SOURCE, resolve_team
 from ingest.resolve import build_alias_pool
@@ -72,12 +72,55 @@ def _current_season_label(as_of: dt.date | None = None) -> str:
     return f"{start_year}/{str(start_year + 1)[2:]}"
 
 
+def _sync_coach(session: Session, team: Team, team_data: dict) -> bool:
+    """Upserts this team's current coach from the same /teams response
+    _sync_squad already fetches — team_data["coach"] was never read before
+    this. One row per team (unlike SquadPlayer's delete-then-reinsert-many),
+    so a plain get-or-create-then-update is the natural shape; an empty/
+    missing coach object is left alone rather than clearing a good row,
+    same "source hasn't published it here" reasoning _sync_squad's own
+    empty-squad check documents."""
+    coach_data = team_data.get("coach") or {}
+    name = coach_data.get("name")
+    if not name:
+        return False
+
+    dob = None
+    if coach_data.get("dateOfBirth"):
+        try:
+            dob = dt.date.fromisoformat(coach_data["dateOfBirth"])
+        except ValueError:
+            dob = None
+
+    existing = session.query(Coach).filter_by(team_id=team.id).one_or_none()
+    if existing is None:
+        session.add(
+            Coach(
+                team_id=team.id,
+                name=name,
+                nationality=coach_data.get("nationality"),
+                date_of_birth=dob,
+                fd_coach_id=coach_data.get("id"),
+                synced_at=dt.datetime.utcnow(),
+            )
+        )
+    else:
+        existing.name = name
+        existing.nationality = coach_data.get("nationality")
+        existing.date_of_birth = dob
+        existing.fd_coach_id = coach_data.get("id")
+        existing.synced_at = dt.datetime.utcnow()
+    return True
+
+
 def _sync_squad(session: Session, competition: Competition, team_data: dict, pool: dict) -> int:
     team = resolve_team(
         session, team_data.get("name") or "", context=f"squad sync {competition.slug}", pool=pool
     )
     if team is None:
         return 0
+
+    _sync_coach(session, team, team_data)
 
     squad = team_data.get("squad") or []
     if not squad:

@@ -10,7 +10,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Player, PlayerAlias, SquadPlayer, Team, UnresolvedPlayerAlias
-from ingest.resolve_players import resolve_or_create_player, seed_players_from_squads, split_surname_initial
+from ingest.resolve_players import (
+    current_team_for_players,
+    resolve_or_create_player,
+    seed_players_from_squads,
+    split_surname_initial,
+)
 
 
 @pytest.fixture()
@@ -166,6 +171,40 @@ def test_seed_players_from_squads_creates_one_player_per_squad_row(session, team
     assert player.canonical_name == "Mads Hermansen"
     assert player.date_of_birth == dt.date(2002, 3, 22)
     assert player.normalized_surname == "hermansen"
+    assert player.primary_position == "G"  # "Goalkeeper" mapped to the G/D/M/F code
+
+
+def test_seed_players_from_squads_backfills_position_onto_already_seeded_player(session, team):
+    """A player seeded before their squad position was known (or before
+    this mapping existed) should still get a position the next time this
+    runs — not just newly-created players."""
+    session.add(SquadPlayer(team_id=team.id, name="Mads Hermansen", position="Goalkeeper", fd_person_id=555))
+    session.flush()
+    seed_players_from_squads(session)  # creates the player, no position backfill needed this call
+
+    player = session.query(Player).one()
+    player.primary_position = None  # simulate a player seeded before positions were tracked
+    session.commit()
+
+    seed_players_from_squads(session)  # second call: same alias already exists, should still backfill
+
+    session.refresh(player)
+    assert player.primary_position == "G"
+
+
+def test_seed_players_from_squads_never_overwrites_an_existing_position(session, team):
+    session.add(SquadPlayer(team_id=team.id, name="Mads Hermansen", position="Goalkeeper", fd_person_id=555))
+    session.flush()
+    seed_players_from_squads(session)
+
+    player = session.query(Player).one()
+    player.primary_position = "D"  # e.g. corrected by a richer source elsewhere
+    session.commit()
+
+    seed_players_from_squads(session)
+
+    session.refresh(player)
+    assert player.primary_position == "D"  # not clobbered back to "G"
 
 
 def test_seed_players_from_squads_is_idempotent(session, team):
@@ -190,4 +229,44 @@ def test_seeded_full_name_then_abbreviated_lineup_name_resolve_together(session,
 
     assert lineup_sighting.id == seeded.id
     assert session.query(Player).count() == 1
+
+
+# ---------- current_team_for_players ----------
+
+
+def test_current_team_for_players_empty_for_no_ids(session):
+    assert current_team_for_players(session, []) == {}
+
+
+def test_current_team_for_players_uses_most_recent_alias(session):
+    old_team = Team(canonical_name="Old Club")
+    new_team = Team(canonical_name="New Club")
+    session.add_all([old_team, new_team])
+    session.flush()
+
+    player = resolve_or_create_player(session, "Someone", "bigballs", team_id=old_team.id, source_player_id="p1")
+    # Simulate a transfer: a later-dated alias under the new club.
+    import datetime as _dt
+
+    from app.models import PlayerAlias as _PlayerAlias
+
+    session.add(
+        _PlayerAlias(
+            player_id=player.id,
+            alias="Someone",
+            source="bigballs",
+            team_id=new_team.id,
+            created_at=_dt.datetime.utcnow() + _dt.timedelta(days=1),
+        )
+    )
+    session.commit()
+
+    result = current_team_for_players(session, [player.id])
+    assert result[player.id] == new_team.id
+
+
+def test_current_team_for_players_omits_players_with_no_team_alias(session, team):
+    player = resolve_or_create_player(session, "No Team Player", "bigballs", team_id=None)
+    result = current_team_for_players(session, [player.id])
+    assert player.id not in result
     assert session.query(PlayerAlias).filter_by(source="bigballs").count() == 1

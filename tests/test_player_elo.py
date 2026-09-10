@@ -17,6 +17,7 @@ from model.player_elo import (
     SHRINKAGE_APPEARANCES_THRESHOLD,
     SOURCE_INTERNAL,
     _replay_player_elo,
+    compute_ear,
     live_team_strength,
     load_persisted_player_ratings,
     persist_player_ratings,
@@ -380,3 +381,50 @@ def test_prune_player_ratings_keeps_only_latest_snapshot_per_player(session):
     assert by_player[1].as_of_date == dt.date(2026, 1, 5)
     assert by_player[1].elo == pytest.approx(1520.0)
     assert by_player[2].as_of_date == dt.date(2026, 1, 5)
+
+
+# ---------- compute_ear ----------
+
+
+def test_compute_ear_zero_for_median_player_in_a_three_player_bucket():
+    ratings = {1: 1600.0, 2: 1500.0, 3: 1400.0}
+    position = {1: "M", 2: "M", 3: "M"}
+    competition = {1: 10, 2: 10, 3: 10}
+    ear = compute_ear(ratings, position, competition)
+    assert ear[2] == pytest.approx(0.0)  # the median IS the replacement level
+    assert ear[1] > 0
+    assert ear[3] < 0
+
+
+def test_compute_ear_separates_positions_within_the_same_competition():
+    """A weak defender shouldn't be judged against strong midfielders just
+    because they share a competition -- the replacement level is per
+    position, not just per competition."""
+    ratings = {1: 1700.0, 2: 1650.0, 3: 1300.0}
+    position = {1: "M", 2: "M", 3: "D"}
+    competition = {1: 10, 2: 10, 3: 10}
+    ear = compute_ear(ratings, position, competition)
+    # Player 3 is the ONLY defender in this competition -- their own rating
+    # IS the (single-player) replacement level for that bucket.
+    assert ear[3] == pytest.approx(0.0)
+
+
+def test_compute_ear_separates_competitions_at_the_same_position():
+    """The same raw rating should score differently as EAR depending on
+    which competition's positional baseline it's compared against."""
+    ratings = {1: 1600.0, 2: 1400.0, 3: 1600.0}
+    position = {1: "M", 2: "M", 3: "M"}
+    competition = {1: 10, 2: 10, 3: 20}  # player 3 is alone in competition 20
+    ear = compute_ear(ratings, position, competition)
+    assert ear[3] == pytest.approx(0.0)  # sole player in their bucket -> IS the baseline
+    assert ear[1] != ear[3]  # same raw rating, different bucket -> different EAR
+
+
+def test_compute_ear_omits_players_missing_position_or_competition():
+    ratings = {1: 1600.0, 2: 1500.0, 3: 1400.0}
+    position = {1: "M", 2: None, 3: "M"}  # player 2 has no known position
+    competition = {1: 10, 2: 10, 3: None}  # player 3 has no known current competition
+    ear = compute_ear(ratings, position, competition)
+    assert set(ear) == {1}
+    assert 2 not in ear
+    assert 3 not in ear

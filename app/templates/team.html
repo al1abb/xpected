@@ -11,6 +11,9 @@
       {{ form_grade_badge(team_form_grade) }}
     </h1>
     <p class="text-sm text-gray-500 dark:text-gray-400">{{ team.country or "" }} · Elo rating <span class="font-semibold text-gray-700 dark:text-gray-300">{{ '%.0f'|format(elo_rating) }}</span></p>
+    {% if coach %}
+    <p class="text-sm text-gray-500 dark:text-gray-400">Coach <span class="font-semibold text-gray-700 dark:text-gray-300">{{ coach.name }}</span>{% if coach.nationality %} · {{ coach.nationality }}{% endif %}</p>
+    {% endif %}
   </div>
   <a href="/compare?a={{ team.id }}" class="ml-auto shrink-0 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm font-medium text-gray-600 hover:border-indigo-300 hover:text-indigo-600 dark:text-gray-300 dark:hover:text-indigo-400">
     Compare
@@ -55,6 +58,9 @@
     {% for p in group.players %}
     <div class="flex items-center gap-2 px-3 py-1.5 text-sm">
       <span class="flex-1 truncate text-gray-700 dark:text-gray-300">{{ p.name }}</span>
+      {% if p.rating %}
+      <span class="shrink-0 text-xs font-semibold tabular-nums text-indigo-600 dark:text-indigo-400" title="Player Elo rating">{{ '%.0f'|format(p.rating) }}</span>
+      {% endif %}
       {% if p.nationality %}
       <span class="shrink-0 text-xs text-gray-400 dark:text-gray-400">{{ p.nationality }}</span>
       {% endif %}

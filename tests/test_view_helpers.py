@@ -15,15 +15,17 @@ from sqlalchemy.orm import sessionmaker
 from app.main import (
     ESTIMATED_MATCH_DURATION,
     SOON_WINDOW,
+    _PLAYER_RATINGS_CACHE,
     _live_state,
     _prune_live_match_state,
     _resolve_live_clock,
+    _squad_by_position,
     group_by_day,
     group_by_month,
     search_teams_query,
     with_today_marker,
 )
-from app.models import Base, Competition, LiveMatchState, Match, Team, TeamAlias
+from app.models import Base, Competition, LiveMatchState, Match, Player, PlayerAlias, PlayerRating, SquadPlayer, Team, TeamAlias
 
 
 def _card(kickoff):
@@ -166,6 +168,25 @@ def session():
     s = Session()
     yield s
     s.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_player_ratings_cache():
+    """_squad_by_position reads player ratings through app.main's module-
+    level _PLAYER_RATINGS_CACHE (a 1h TTL memo over a plain SELECT — see
+    _cached_player_ratings). Each test builds its own fresh in-memory
+    session, but the cache dict is a process-wide singleton that doesn't
+    know that: without a reset, the FIRST test to populate it would leak
+    its ratings into every other test in the same pytest run until the TTL
+    expired. Reset before and after so no test either reads a previous
+    test's stale cache or leaves one behind for the next."""
+    _PLAYER_RATINGS_CACHE["computed_at"] = None
+    _PLAYER_RATINGS_CACHE["ratings"] = {}
+    _PLAYER_RATINGS_CACHE["appearance_counts"] = {}
+    yield
+    _PLAYER_RATINGS_CACHE["computed_at"] = None
+    _PLAYER_RATINGS_CACHE["ratings"] = {}
+    _PLAYER_RATINGS_CACHE["appearance_counts"] = {}
 
 
 def test_search_teams_query_dedupes_multi_alias_matches(session):
@@ -388,3 +409,38 @@ def test_prune_live_match_state_removes_only_stale_rows(session):
 
     remaining = {s.match_id for s in session.query(LiveMatchState).all()}
     assert remaining == {2}
+
+
+# ---------- _squad_by_position ----------
+
+
+def test_squad_by_position_attaches_rating_by_resolved_alias(session):
+    team = Team(canonical_name="Leicester City")
+    session.add(team)
+    session.flush()
+    session.add(SquadPlayer(team_id=team.id, name="Mads Hermansen", position="Goalkeeper"))
+    session.flush()
+
+    player = Player(canonical_name="Mads Hermansen", normalized_surname="hermansen", first_initial="m")
+    session.add(player)
+    session.flush()
+    session.add(PlayerAlias(player_id=player.id, alias="Mads Hermansen", source="football_data_org", team_id=team.id))
+    session.add(PlayerRating(player_id=player.id, as_of_date=dt.date(2026, 1, 1), elo=1650.0, source="internal"))
+    session.commit()
+
+    groups = _squad_by_position(session, team.id)
+    all_players = [p for g in groups for p in g["players"]]
+    assert len(all_players) == 1
+    assert all_players[0].rating == pytest.approx(1650.0)
+
+
+def test_squad_by_position_none_rating_when_unresolved(session):
+    team = Team(canonical_name="Leicester City")
+    session.add(team)
+    session.flush()
+    session.add(SquadPlayer(team_id=team.id, name="Nobody Rated", position="Midfield"))
+    session.commit()
+
+    groups = _squad_by_position(session, team.id)
+    all_players = [p for g in groups for p in g["players"]]
+    assert all_players[0].rating is None

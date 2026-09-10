@@ -24,6 +24,7 @@ from app.db import SessionLocal, init_db
 from ingest.bigballs import sync_all as sync_lineups
 from ingest.football_data_org_players import sync_scorers, sync_squads
 from ingest.news import sync_news
+from ingest.resolve_players import seed_players_from_squads
 from ingest.sync import run_api_sync, run_current_season_fixture_sync, run_free_sync
 from model.elo import compute_ratings, persist_ratings
 from model.player_elo import compute_player_ratings, persist_player_ratings, prune_player_ratings
@@ -88,6 +89,13 @@ def main() -> None:
         # competitions (see ingest/football_data_org_players.py); app/main.py
         # shows an explicit empty state for the rest rather than stale data.
         _step("squads (football-data.org)", lambda: sync_squads(session))
+        # Resolves any new squad player to a Player + backfills position onto
+        # existing ones (see that function's docstring) — after squads sync,
+        # so it sees today's roster, not yesterday's.
+        _step(
+            "seed player identities from squads",
+            lambda: f"{seed_players_from_squads(session)} new players seeded",
+        )
         _step("top scorers/assists (football-data.org)", lambda: sync_scorers(session))
 
         # Lineups + per-match player stats (bigballsdata.com) — display only,

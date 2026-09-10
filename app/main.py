@@ -13,6 +13,7 @@ from app.colors import resolve_match_colors, team_colors
 from app.config import BASE_DIR, NEWS_FEEDS, league_zone_for, settings
 from app.db import SessionLocal, init_db
 from app.models import (
+    Coach,
     Competition,
     EloRating,
     IngestLog,
@@ -21,6 +22,8 @@ from app.models import (
     Match,
     ModelRun,
     NewsItem,
+    Player,
+    PlayerAlias,
     PlayerMatchStat,
     PlayerStat,
     Prediction,
@@ -33,11 +36,13 @@ from ingest.football_data_org_aliases import FD_ORG_TO_CANONICAL
 from ingest.highlightly import LEAGUE_IDS as HIGHLIGHTLY_LEAGUE_IDS
 from ingest.live_scores import fetch_live_matches
 from ingest.resolve import normalize
+from ingest.resolve_players import current_team_for_players
 from ingest.seasons import current_season_start_year
 from model import backtest, league_strength
 from model.backtest import devigged_market_probs
-from model.elo import BASE_RATING, load_persisted_ratings
+from model.elo import BASE_RATING, _team_primary_league, load_persisted_ratings
 from model.form import form_grade
+from model.player_elo import compute_ear, load_persisted_player_ratings
 from model.predict import score_matrix, summarize_matrix
 from model.standings import compute_standings
 
@@ -156,6 +161,25 @@ def _cached_ratings(session: Session) -> dict[int, float]:
         _RATINGS_CACHE["ratings"] = load_persisted_ratings(session)
         _RATINGS_CACHE["computed_at"] = now
     return _RATINGS_CACHE["ratings"]
+
+
+# Same reasoning as _RATINGS_CACHE above, one level down: player Elo is also
+# computed offline (scripts/refresh.py) and persisted, so this is a plain
+# SELECT too (model.player_elo.load_persisted_player_ratings) — the cache
+# just avoids repeating that SELECT on every request in the same warm
+# instance.
+_PLAYER_RATINGS_CACHE: dict = {"computed_at": None, "ratings": {}, "appearance_counts": {}}
+
+
+def _cached_player_ratings(session: Session) -> tuple[dict[int, float], dict[int, int]]:
+    now = dt.datetime.utcnow()
+    computed_at = _PLAYER_RATINGS_CACHE["computed_at"]
+    if computed_at is None or now - computed_at > _RATINGS_CACHE_TTL:
+        ratings, appearance_counts = load_persisted_player_ratings(session)
+        _PLAYER_RATINGS_CACHE["ratings"] = ratings
+        _PLAYER_RATINGS_CACHE["appearance_counts"] = appearance_counts
+        _PLAYER_RATINGS_CACHE["computed_at"] = now
+    return _PLAYER_RATINGS_CACHE["ratings"], _PLAYER_RATINGS_CACHE["appearance_counts"]
 
 
 # For the team-compare feature: a full model.predict.Predictor() is where a
@@ -477,6 +501,8 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
             return stats_by_id[player.bbs_player_id]
         return stats_by_name.get((team_id, player.player_name))
 
+    elo_ratings, _appearance_counts = _cached_player_ratings(session)
+
     home_starters = [p for p in rows if p.team_id == match.home_team_id and p.starter]
     away_starters = [p for p in rows if p.team_id == match.away_team_id and p.starter]
     home_rows = _build_rows(home_starters, match.home_formation)
@@ -492,10 +518,15 @@ def _match_lineups(session: Session, match: Match) -> dict | None:
         return {
             "formation": formation,
             "pitch": [
-                {**_lineup_row(p, _stat_for(team_id, p)), "top_pct": pos[0], "left_pct": pos[1], "role": role}
+                {
+                    **_lineup_row(p, _stat_for(team_id, p), elo_ratings),
+                    "top_pct": pos[0],
+                    "left_pct": pos[1],
+                    "role": role,
+                }
                 for p, pos, role in positioned
             ],
-            "bench": [_lineup_row(p, _stat_for(team_id, p)) for p in bench],
+            "bench": [_lineup_row(p, _stat_for(team_id, p), elo_ratings) for p in bench],
         }
 
     return {
@@ -682,7 +713,7 @@ def _surname(name: str) -> str:
     return parts[-1] if parts else name
 
 
-def _lineup_row(player: Lineup, stat: PlayerMatchStat | None) -> dict:
+def _lineup_row(player: Lineup, stat: PlayerMatchStat | None, elo_ratings: dict[int, float]) -> dict:
     extra = (stat.extra if stat else None) or {}
     return {
         "name": player.player_name,
@@ -692,6 +723,13 @@ def _lineup_row(player: Lineup, stat: PlayerMatchStat | None) -> dict:
         "goals": stat.goals if stat else None,
         "assists": stat.assists if stat else None,
         "rating": stat.rating if stat else None,
+        # model/player_elo.py's rating, not bigballsdata's post-match "rating"
+        # above (a 1-10 performance score) — deliberately named differently
+        # so the template can show both without either name shadowing the
+        # other. None whenever this player hasn't been resolved to a rated
+        # Player (Lineup.player_id null, or simply not enough appearance
+        # history yet) — same "absent, not a misleading 0" stance as EAR.
+        "elo_rating": elo_ratings.get(player.player_id) if player.player_id else None,
         "headshot_url": stat.headshot_url if stat else None,
         # Not typed columns — extra's raw values are strings straight from the
         # API ("0"/"1"), and yellow/red cards are display-only badges, not
@@ -751,6 +789,24 @@ def _squad_by_position(session: Session, team_id: int) -> list[dict]:
     players = (
         session.query(SquadPlayer).filter_by(team_id=team_id).order_by(SquadPlayer.name).all()
     )
+    if players:
+        # SquadPlayer carries no FK to Player (it's football-data.org's own,
+        # unresolved identity — see that model's docstring), so a rating has
+        # to be resolved at read time via the 'football_data_org' alias
+        # ingest/resolve_players.py::seed_players_from_squads creates for
+        # every squad player. `.rating` set here is a plain runtime
+        # attribute, not a column — never persisted, just carried through
+        # to the template alongside the ORM object's real fields.
+        aliases = (
+            session.query(PlayerAlias)
+            .filter(PlayerAlias.source == "football_data_org", PlayerAlias.team_id == team_id)
+            .all()
+        )
+        player_id_by_name = {a.alias: a.player_id for a in aliases}
+        ratings, _appearance_counts = _cached_player_ratings(session)
+        for p in players:
+            p.rating = ratings.get(player_id_by_name.get(p.name))
+
     groups: dict[str, list[SquadPlayer]] = {}
     for p in players:
         groups.setdefault(p.position or "Other", []).append(p)
@@ -1221,6 +1277,31 @@ def competition_page(request: Request, slug: str):
             top_assists[0].season_label if top_assists else None
         )
 
+        # Top-rated players whose current team's primary competition is
+        # THIS one (model/player_elo.py's ratings, model/elo.py's own
+        # _team_primary_league for "which competition is this club really
+        # in" — the same lookup the global /players leaderboard uses).
+        ratings, appearance_counts = _cached_player_ratings(session)
+        team_by_player = current_team_for_players(session, list(ratings))
+        team_competition = _team_primary_league(session, as_of=None)
+        in_this_competition = [
+            pid for pid, team_id in team_by_player.items() if team_competition.get(team_id) == competition.id
+        ]
+        ranked_ids = sorted(in_this_competition, key=lambda pid: -ratings[pid])[:20]
+        rated_players = {p.id: p for p in session.query(Player).filter(Player.id.in_(ranked_ids)).all()} if ranked_ids else {}
+        teams_by_id = {t.id: t for t in session.query(Team).filter(Team.id.in_(team_by_player.values())).all()} if team_by_player else {}
+        top_ratings = [
+            {
+                "rank": rank,
+                "player": rated_players[pid],
+                "team": teams_by_id.get(team_by_player.get(pid)),
+                "rating": ratings[pid],
+                "appearances": appearance_counts.get(pid, 0),
+            }
+            for rank, pid in enumerate(ranked_ids, start=1)
+            if pid in rated_players
+        ]
+
         stats_stale_reason = None
         player_stats_is_current = player_stats_season == current_season_label
         if competition.type == "uefa_cup":
@@ -1250,6 +1331,7 @@ def competition_page(request: Request, slug: str):
             standings_has_zones=standings_has_zones,
             top_scorers=top_scorers,
             top_assists=top_assists,
+            top_ratings=top_ratings,
             player_stats_season=player_stats_season,
             player_stats_is_current=player_stats_is_current,
             stats_stale_reason=stats_stale_reason,
@@ -1381,6 +1463,7 @@ def team_page(request: Request, team_id: int):
         team_form_grade = form_grade(session, team_id, as_of=now)
         squad = _squad_by_position(session, team_id)
         news = _news_for_teams(session, [team_id])
+        coach = session.query(Coach).filter_by(team_id=team_id).one_or_none()
 
         ratings = _cached_ratings(session)
         elo_rating = ratings.get(team_id, BASE_RATING)
@@ -1395,8 +1478,59 @@ def team_page(request: Request, team_id: int):
             squad=squad,
             news=news,
             elo_rating=elo_rating,
+            coach=coach,
         )
         return templates.TemplateResponse(request, "team.html", ctx)
+    finally:
+        session.close()
+
+
+_PLAYERS_LEADERBOARD_LIMIT = 100
+
+
+@app.get("/players", response_class=HTMLResponse)
+def players_page(request: Request):
+    """Global player-Elo leaderboard, top N by current rating. See
+    model/player_elo.py's own docstring for what the rating means and why
+    it's currently shallow (a growing, multi-day historical backfill, not
+    a bug) — the page states the real coverage rather than implying a
+    complete cross-league table it can't back up yet."""
+    session = get_session()
+    try:
+        ratings, appearance_counts = _cached_player_ratings(session)
+        ranked_ids = sorted(ratings, key=lambda pid: -ratings[pid])[:_PLAYERS_LEADERBOARD_LIMIT]
+
+        players = session.query(Player).filter(Player.id.in_(ranked_ids)).all() if ranked_ids else []
+        players_by_id = {p.id: p for p in players}
+
+        team_by_player = current_team_for_players(session, ranked_ids)
+        team_ids = set(team_by_player.values())
+        teams_by_id = {t.id: t for t in session.query(Team).filter(Team.id.in_(team_ids)).all()} if team_ids else {}
+
+        team_competition = _team_primary_league(session, as_of=None)
+        player_position = {pid: players_by_id[pid].primary_position for pid in ranked_ids if pid in players_by_id}
+        player_competition = {pid: team_competition.get(team_by_player.get(pid)) for pid in ranked_ids}
+        ear = compute_ear(ratings, player_position, player_competition)
+
+        rows = []
+        for rank, player_id in enumerate(ranked_ids, start=1):
+            player = players_by_id.get(player_id)
+            if player is None:
+                continue
+            rows.append(
+                {
+                    "rank": rank,
+                    "player": player,
+                    "team": teams_by_id.get(team_by_player.get(player_id)),
+                    "rating": ratings[player_id],
+                    "appearances": appearance_counts.get(player_id, 0),
+                    "ear": ear.get(player_id),
+                }
+            )
+
+        ctx = _template_context(session, request, players=rows, total_rated=len(ratings))
+        ctx["current_slug"] = "players"
+        return templates.TemplateResponse(request, "players.html", ctx)
     finally:
         session.close()
 

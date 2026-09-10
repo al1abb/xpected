@@ -312,7 +312,35 @@
 </section>
 {% endif %}
 
-{% if not standings and not standings_empty_reason and not top_scorers and not top_assists and not stats_stale_reason %}
+{% if top_ratings %}
+<section class="mb-8">
+  <h2 class="text-lg font-bold mb-1">Top Rated Players</h2>
+  <p class="text-xs text-[color:var(--comp-muted)] mb-3">
+    Player-level Elo (<a href="/players" class="underline hover:text-indigo-500">full leaderboard</a>) — built from a growing historical backfill, so coverage deepens over time.
+  </p>
+  <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+        {% for row in top_ratings %}
+        <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40">
+          <td class="px-3 py-2 text-right text-[color:var(--comp-muted)] w-6">{{ row.rank }}</td>
+          <td class="px-3 py-2">
+            <span class="flex items-center gap-2 truncate">
+              {% if row.team %}{{ team_badge(row.team.canonical_name, row.team.logo_url, row.team.primary_color, 5) }}{% endif %}
+              <span class="truncate">{{ row.player.canonical_name }}</span>
+            </span>
+          </td>
+          <td class="px-3 py-2 text-right text-xs text-[color:var(--comp-muted)]">{{ row.appearances }} apps</td>
+          <td class="px-3 py-2 text-right font-bold font-mono">{{ '%.0f'|format(row.rating) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if not standings and not standings_empty_reason and not top_scorers and not top_assists and not top_ratings and not stats_stale_reason %}
 <p class="text-sm text-gray-500 dark:text-gray-400">Nothing to show here for this competition.</p>
 {% endif %}
 

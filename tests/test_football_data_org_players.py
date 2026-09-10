@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
-from app.models import Base, Competition, PlayerStat, SquadPlayer, Team, TeamAlias
+from app.models import Base, Coach, Competition, PlayerStat, SquadPlayer, Team, TeamAlias
 from ingest.football_data_org_players import sync_scorers, sync_squads
 
 
@@ -65,8 +65,15 @@ def _teams_payload(*teams):
     return json.dumps({"teams": list(teams)})
 
 
-def _team(name, squad):
-    return {"name": name, "squad": squad}
+def _team(name, squad, coach=None):
+    payload = {"name": name, "squad": squad}
+    if coach is not None:
+        payload["coach"] = coach
+    return payload
+
+
+def _coach(id, name, nationality="Spain", dob="1971-01-18"):
+    return {"id": id, "name": name, "nationality": nationality, "dateOfBirth": dob}
 
 
 def _player(id, name, position="Midfield", dob="1998-04-12", nationality="England"):
@@ -94,6 +101,51 @@ def test_sync_squads_writes_players_for_resolved_team(session, monkeypatch):
     rows = session.query(SquadPlayer).filter_by(team_id=team.id).all()
     assert {r.name for r in rows} == {"Bukayo Saka", "Declan Rice"}
     assert all(r.date_of_birth is not None for r in rows)
+
+
+def test_sync_squads_writes_coach_for_resolved_team(session, monkeypatch):
+    _competition(session)
+    team = _team_with_alias(session, "Arsenal")
+
+    payload = _teams_payload(_team("Arsenal FC", [_player(1, "Bukayo Saka")], coach=_coach(99, "Mikel Arteta")))
+    monkeypatch.setattr("ingest.football_data_org_players.fetch_text", lambda *a, **k: payload)
+
+    sync_squads(session)
+
+    coach = session.query(Coach).filter_by(team_id=team.id).one()
+    assert coach.name == "Mikel Arteta"
+    assert coach.nationality == "Spain"
+    assert coach.date_of_birth is not None
+    assert coach.fd_coach_id == 99
+
+
+def test_sync_squads_missing_coach_leaves_no_row(session, monkeypatch):
+    _competition(session)
+    team = _team_with_alias(session, "Arsenal")
+    payload = _teams_payload(_team("Arsenal FC", [_player(1, "Bukayo Saka")]))  # no coach key at all
+    monkeypatch.setattr("ingest.football_data_org_players.fetch_text", lambda *a, **k: payload)
+
+    sync_squads(session)
+
+    assert session.query(Coach).filter_by(team_id=team.id).one_or_none() is None
+
+
+def test_sync_squads_updates_coach_in_place_on_resync(session, monkeypatch):
+    _competition(session)
+    team = _team_with_alias(session, "Arsenal")
+
+    first = _teams_payload(_team("Arsenal FC", [_player(1, "Bukayo Saka")], coach=_coach(99, "Old Coach")))
+    monkeypatch.setattr("ingest.football_data_org_players.fetch_text", lambda *a, **k: first)
+    sync_squads(session)
+
+    second = _teams_payload(_team("Arsenal FC", [_player(1, "Bukayo Saka")], coach=_coach(100, "New Coach")))
+    monkeypatch.setattr("ingest.football_data_org_players.fetch_text", lambda *a, **k: second)
+    sync_squads(session)
+
+    coaches = session.query(Coach).filter_by(team_id=team.id).all()
+    assert len(coaches) == 1  # updated in place, not duplicated
+    assert coaches[0].name == "New Coach"
+    assert coaches[0].fd_coach_id == 100
 
 
 def test_sync_squads_skips_unresolvable_team_without_crashing(session, monkeypatch):

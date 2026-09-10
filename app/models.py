@@ -298,6 +298,35 @@ class SquadPlayer(Base):
     team: Mapped[Team] = relationship()
 
 
+class Coach(Base):
+    """This team's current head coach — a same-day snapshot from
+    football-data.org's /competitions/{code}/teams response, whose `coach`
+    object ingest/football_data_org_players.py::sync_squads already fetches
+    daily (for the squad list) but never read until now. One row per team,
+    upserted in place, same source and cadence as SquadPlayer.
+
+    No match-level history, deliberately: there is no free source giving
+    "who managed match X" for any past fixture, so this can only ever
+    answer "who manages this team today" — never inform a historical
+    prediction. Display-only until (if ever) enough forward-accumulated
+    history exists to change that; see model/player_elo.py's own
+    docstring for the equivalent reasoning on why per-player Elo needed a
+    real backfill first and coach ratings don't have one available."""
+
+    __tablename__ = "coaches"
+    __table_args__ = (UniqueConstraint("team_id", name="uq_coach_team"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    name: Mapped[str] = mapped_column(String(128))
+    nationality: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    date_of_birth: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    fd_coach_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    team: Mapped[Team] = relationship()
+
+
 class Player(Base):
     """A real person, resolved across sources — the identity layer
     ingest/resolve_players.py builds and model/player_elo.py rates.
