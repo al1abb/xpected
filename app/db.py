@@ -58,6 +58,8 @@ def init_db() -> None:
         ("lineups", "order_index", "INTEGER"),
         ("player_match_stats", "headshot_url", "VARCHAR(256)"),
         ("matches", "highlightly_match_id", "INTEGER"),
+        ("lineups", "player_id", "INTEGER"),
+        ("predictions", "lineup_based", "BOOLEAN"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())

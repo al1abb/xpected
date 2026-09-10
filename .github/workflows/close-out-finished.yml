@@ -17,6 +17,17 @@ name: Close out finished matches
 # budget documented below. Both skip themselves cleanly if their API key
 # isn't set.
 #
+# Then scripts/resharpen_predictions.py: once a lineup sync above actually
+# publishes a starting XI, that match's already-generated prediction is
+# still the team-level fallback (see model/predict.py's Prediction.
+# lineup_based) until something re-predicts it — daily-refresh.yml runs once
+# at 06:00 UTC, hours before any lineup for that day exists, so without this
+# step no scheduled match would ever show a lineup-based prediction. Cheap
+# on the common no-op tick (a handful of read-only queries, no DB write) and
+# updates existing Prediction rows in place rather than a full model refit +
+# rewrite of every scheduled match, which running every 15 minutes could not
+# afford — see that script's own docstring.
+#
 # Self-healing by design: if this run's push ever loses a race against
 # daily-refresh.yml (both touch data/app.db), it just fails that one run —
 # the next run 15 minutes later re-checks the same matches and succeeds,
@@ -66,6 +77,9 @@ jobs:
         env:
           HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
         run: python scripts/sync_highlightly_lineups.py
+
+      - name: Re-predict matches whose lineup just landed
+        run: python scripts/resharpen_predictions.py
 
       - name: Commit and push if anything changed
         run: |

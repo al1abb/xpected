@@ -220,6 +220,15 @@ class Prediction(Base):
     btts_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
     top_scorelines: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [{"score": "1-0", "prob": 0.12}, ...]
     confidence: Mapped[str] = mapped_column(String(16), default="normal")  # 'normal' | 'low'
+    # Whether this specific prediction used the confirmed starting XI's
+    # player-derived strength (model/player_elo.py) rather than team-level
+    # Elo — set once, at generation time, so the match page can say exactly
+    # what produced the number it's showing rather than inferring it from
+    # whether a lineup merely exists today (which, for an old prediction on
+    # a now-finished match, says nothing about what was known when the
+    # prediction was actually made). See model/predict.py::Predictor's
+    # _team_strength_for and Phase 4 of the player-Elo plan.
+    lineup_based: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     match: Mapped[Match] = relationship(back_populates="predictions")
@@ -415,7 +424,17 @@ class Lineup(Base):
     gives no explicit tactical slot (e.g. which of 4 defenders is the left
     back), so the pitch-diagram layout in app/main.py:_match_lineups leans on
     list order + Match.home_formation/away_formation as its best-effort
-    placement, not a guaranteed-correct one."""
+    placement, not a guaranteed-correct one.
+
+    `player_id` resolves this row's raw name/bbs_player_id to a Player (see
+    ingest/resolve_players.py), written by ingest/bigballs.py and
+    ingest/highlightly.py at the same sync that writes the rest of this row
+    — never backfilled separately, so a match's own next lineup re-sync is
+    what populates it for rows that predate this column. This is what lets
+    model/predict.py look up a confirmed starting XI's player ratings
+    (model/player_elo.py) instead of only ever displaying names; nullable
+    because resolution can only run where a name was actually synced, and
+    older un-re-synced rows have none."""
 
     __tablename__ = "lineups"
     __table_args__ = (
@@ -431,6 +450,7 @@ class Lineup(Base):
     starter: Mapped[bool] = mapped_column(Boolean)
     order_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bbs_player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     synced_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     match: Mapped[Match] = relationship()

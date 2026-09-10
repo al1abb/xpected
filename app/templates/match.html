@@ -63,6 +63,25 @@
   </h2>
   {% if prediction %}
     {{ probability_bar(home.canonical_name, home_color, prediction.home_win_prob * 100, prediction.draw_prob * 100, away.canonical_name, away_color, prediction.away_win_prob * 100) }}
+    {% if prediction.lineup_based %}
+    <p class="mt-3 flex items-start gap-1.5 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg px-3 py-2">
+      <span>✓</span><span>Based on the confirmed starting lineups, not just each club's overall record.</span>
+    </p>
+    {% elif player_data_available %}
+      {% if match.status == "finished" %}
+    <p class="mt-3 flex items-start gap-1.5 text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/60 rounded-lg px-3 py-2">
+      <span>⏳</span><span>Made before lineups were confirmed for this match.</span>
+    </p>
+      {% else %}
+    <p class="mt-3 flex items-start gap-1.5 text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/60 rounded-lg px-3 py-2">
+      <span>⏳</span><span>Awaiting confirmed lineups — this prediction will sharpen when team news lands (~1h before kickoff).</span>
+    </p>
+      {% endif %}
+    {% else %}
+    <p class="mt-3 flex items-start gap-1.5 text-sm text-gray-500 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/60 rounded-lg px-3 py-2">
+      <span>ℹ</span><span>Player-based sharpening isn't available for this competition yet.</span>
+    </p>
+    {% endif %}
     {% if prediction.confidence == "low" %}
     <p class="mt-3 flex items-start gap-1.5 text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-2">
       <span>⚠</span><span>Low confidence: one or both teams have limited history in this competition, so this leans on cross-competition strength (Elo) rather than a full statistical fit.</span>

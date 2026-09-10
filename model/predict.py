@@ -1,16 +1,26 @@
-"""Ties elo.py + dixon_coles.py + league_strength.py into one prediction per
-match: a (lambda_home, lambda_away, rho) triple turned into a full scoreline
-matrix, then reduced to 1X2 / over-under / BTTS / top scorelines.
+"""Ties elo.py + player_elo.py + dixon_coles.py + league_strength.py into one
+prediction per match: a (lambda_home, lambda_away, rho) triple turned into a
+full scoreline matrix, then reduced to 1X2 / over-under / BTTS / top
+scorelines.
 
-Per-match lambda source:
+Where each side's "how strong is this team today" number comes from
+(Predictor._team_strength_for): a confirmed starting XI (app.models.Lineup)
+for BOTH sides, when one exists, wins over team-level Elo — the players
+actually on the pitch are a more direct signal than the club's aggregate
+win/loss record, and it's what lets a transfer or an injury move a
+prediction immediately rather than only after results catch up. This is the
+common-but-not-universal case: lineups publish ~1h before kickoff, so most
+of a match's life is spent in the team-Elo fallback, which the match page
+says explicitly rather than presenting either source as if it were the
+other (Prediction.lineup_based).
+
+Per-match lambda source, once that "how strong is each side" number exists:
 - Both teams have enough history in a shared domestic-league Dixon-Coles fit:
   use it directly (richest signal — real shots/goals in that specific league
-  environment).
+  environment), blended against the Elo-bridge in proportion to how much
+  domestic history exists.
 - Otherwise (cross-league UEFA fixture, Azerbaijan Premyer Liqa, or a
-  thin-history team): fall back to the Elo-bridge, blended in proportion to
-  how much domestic history exists — a team with only 3 matches in its
-  league's fit gets pulled mostly toward what Elo alone implies, per the
-  plan's shrinkage design.
+  thin-history team): fall back to the Elo-bridge alone.
 """
 
 from __future__ import annotations
@@ -22,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.config import COMPETITIONS
 from app.models import Competition, Match, ModelRun, Prediction
-from model import calibration, dixon_coles, elo, league_strength, ordinal
+from model import calibration, dixon_coles, elo, league_strength, ordinal, player_elo
 
 MAX_GOALS = 10
 SHRINKAGE_MATCH_THRESHOLD = 10
@@ -130,6 +140,18 @@ class Predictor:
         self.rest_adjustment_enabled = rest_adjustment_enabled
         self.elo_ratings = elo.compute_ratings(session, as_of=as_of, exclude_match_id=exclude_match_id)
         self.overall_match_counts = elo.match_count_by_team(session, as_of=as_of)
+        # Same as_of/exclude_match_id discipline as team Elo above — a fresh
+        # replay per Predictor, not a persisted-snapshot read, so backtesting
+        # at an arbitrary historical cutoff stays lookahead-free (see
+        # model/player_elo.py's own no-lookahead test).
+        self.player_ratings, self.player_appearance_counts = player_elo.compute_player_ratings(
+            session, as_of=as_of, exclude_match_id=exclude_match_id
+        )
+        # Set by _team_strength_for on every lambdas_for call, read
+        # immediately after by predict_match — see that method's docstring
+        # for why this rides as instance state instead of extending
+        # lambdas_for's long-established 4-tuple return.
+        self._last_lineup_based = False
         self.dc_fits = self._fit_all_leagues(exclude_match_id)
         self.shots_fits, self.conversion_rates = self._fit_shots_pools(exclude_match_id)
         self.elo_calib = league_strength.fit(session, self.elo_ratings)
@@ -316,6 +338,33 @@ class Predictor:
         rhos = [f.rho for f in self.dc_fits.values()]
         return float(np.mean(rhos)) if rhos else 0.0
 
+    def _team_strength_for(self, match: Match) -> tuple[float, float, bool]:
+        """(home_strength, away_strength, lineup_based) — the "how strong is
+        each side today" input to the Elo-bridge (self.elo_calib.lambdas).
+
+        Prefers the confirmed starting XI's player-derived strength
+        (model/player_elo.py::live_team_strength) when BOTH sides have one;
+        both sides is deliberate — using a player-derived number for one
+        side and a team-Elo number for the other would compare two
+        different scales, not a stronger vs. weaker read of the same thing.
+        Falls back to team-level Elo otherwise, which is the common case:
+        lineups publish ~1h before kickoff, so most of a match's life is
+        spent here. Never silent — predict_match surfaces which source was
+        used as Prediction.lineup_based, and the match page labels it."""
+        home_strength = player_elo.live_team_strength(
+            self.session, match.id, match.home_team_id, self.player_ratings, self.player_appearance_counts
+        )
+        away_strength = player_elo.live_team_strength(
+            self.session, match.id, match.away_team_id, self.player_ratings, self.player_appearance_counts
+        )
+        if home_strength is not None and away_strength is not None:
+            return home_strength, away_strength, True
+        return (
+            self.elo_ratings.get(match.home_team_id, elo.BASE_RATING),
+            self.elo_ratings.get(match.away_team_id, elo.BASE_RATING),
+            False,
+        )
+
     def lambdas_for(self, match: Match) -> tuple[float, float, float, float]:
         """Returns (lambda_home, lambda_away, rho, confidence_weight).
 
@@ -329,8 +378,7 @@ class Predictor:
         competition, so an established club's European fixture doesn't get
         flagged low just because it's cross-league by construction.
         """
-        elo_home = self.elo_ratings.get(match.home_team_id, elo.BASE_RATING)
-        elo_away = self.elo_ratings.get(match.away_team_id, elo.BASE_RATING)
+        elo_home, elo_away, self._last_lineup_based = self._team_strength_for(match)
         elo_lh, elo_la = self.elo_calib.lambdas(elo_home, elo_away)
 
         fit = self.dc_fits.get(match.competition_id)
@@ -376,6 +424,7 @@ class Predictor:
         summary["home_xg_pred"] = lambda_home
         summary["away_xg_pred"] = lambda_away
         summary["confidence"] = "low" if weight < LOW_CONFIDENCE_WEIGHT else "normal"
+        summary["lineup_based"] = self._last_lineup_based
 
         # Ensemble blend with the ordinal model, before calibration (the
         # calibration temperature is fit against whatever the final blended
@@ -448,6 +497,7 @@ def generate_predictions(session: Session, *, notes: str | None = None) -> int:
                 btts_prob=summary["btts_prob"],
                 top_scorelines=summary["top_scorelines"],
                 confidence=summary["confidence"],
+                lineup_based=summary["lineup_based"],
             )
         )
         count += 1

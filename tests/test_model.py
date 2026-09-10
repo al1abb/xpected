@@ -9,8 +9,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Competition, Match, Team
-from model import calibration, dixon_coles, elo, league_strength, ordinal, predict
+from app.models import Base, Competition, Lineup, Match, Team
+from ingest.bigballs_history import _connect as _connect_appearances
+from model import calibration, dixon_coles, elo, league_strength, ordinal, player_elo, predict
 
 
 @pytest.fixture()
@@ -33,6 +34,19 @@ def _no_network_clubelo(monkeypatch):
     Tests that specifically exercise the anchoring logic override this
     per-test with their own monkeypatch.setattr call."""
     monkeypatch.setattr(elo.clubelo, "fetch_snapshot", lambda session, on_date: {})
+
+
+@pytest.fixture(autouse=True)
+def _isolated_appearances_db(monkeypatch, tmp_path):
+    """Predictor.__init__ now replays player Elo from data/appearances.sqlite
+    (model/player_elo.py) on construction. Tests must never touch the real
+    project file — its match ids belong to real matches and could
+    coincidentally collide with a test fixture's own autoincremented ids,
+    silently pulling real data into an otherwise-isolated test. Point every
+    compute_player_ratings call at a fresh, empty per-test file instead;
+    tests exercising player_elo's own appearances directly build their own
+    connection and don't rely on this fixture."""
+    monkeypatch.setattr(player_elo, "_connect", lambda: _connect_appearances(tmp_path / "appearances.sqlite"))
 
 
 # ---------- elo.py ----------
@@ -384,6 +398,118 @@ def test_predictor_confidence_low_for_thin_history(session):
     predictor = predict.Predictor(session, as_of=dt.datetime(2026, 6, 2))
     summary = predictor.predict_match(fixture)
     assert summary["confidence"] == "low"
+
+
+# ---------- predict.py: lineup-derived team strength (Phase 4) ----------
+
+
+def test_predictor_prefers_lineup_derived_strength_when_confirmed(session, tmp_path):
+    """The core Phase 4 behaviour: two teams that have never played (so
+    team-level Elo alone has them dead even) get a real tilt once a
+    confirmed lineup exists, built from player-Elo history seeded directly
+    into the isolated per-test appearances.sqlite (see
+    _isolated_appearances_db) — home's future starters have racked up heavy
+    wins, away's future starters heavy losses, all well before the fixture
+    itself."""
+    comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    session.add(comp)
+    session.flush()
+    home, away = Team(canonical_name="Home FC"), Team(canonical_name="Away FC")
+    filler1, filler2 = Team(canonical_name="Filler1"), Team(canonical_name="Filler2")
+    session.add_all([home, away, filler1, filler2])
+    session.flush()
+
+    conn = _connect_appearances(tmp_path / "appearances.sqlite")
+    base = dt.datetime(2025, 1, 1)
+    HOME_STARTERS = list(range(1, 8))
+    AWAY_STARTERS = list(range(101, 108))
+    for i in range(3):
+        m1 = Match(
+            competition_id=comp.id, utc_kickoff=base + dt.timedelta(days=i), status="finished",
+            home_team_id=filler1.id, away_team_id=filler2.id, home_goals=4, away_goals=0, source="test",
+        )
+        session.add(m1)
+        session.flush()
+        for pid in HOME_STARTERS:
+            conn.execute("INSERT INTO appearances VALUES (?, ?, ?, ?, NULL)", (m1.id, pid, filler1.id, 90))
+        for k in range(7):
+            conn.execute("INSERT INTO appearances VALUES (?, ?, ?, ?, NULL)", (m1.id, 900 + k, filler2.id, 90))
+
+        m2 = Match(
+            competition_id=comp.id, utc_kickoff=base + dt.timedelta(days=10 + i), status="finished",
+            home_team_id=filler1.id, away_team_id=filler2.id, home_goals=4, away_goals=0, source="test",
+        )
+        session.add(m2)
+        session.flush()
+        for k in range(7):
+            conn.execute("INSERT INTO appearances VALUES (?, ?, ?, ?, NULL)", (m2.id, 900 + k, filler1.id, 90))
+        for pid in AWAY_STARTERS:
+            conn.execute("INSERT INTO appearances VALUES (?, ?, ?, ?, NULL)", (m2.id, pid, filler2.id, 90))
+    conn.commit()
+    conn.close()
+
+    fixture = Match(
+        competition_id=comp.id, utc_kickoff=base + dt.timedelta(days=100), status="scheduled",
+        home_team_id=home.id, away_team_id=away.id, source="test",
+    )
+    session.add(fixture)
+    session.commit()
+
+    predictor_no_lineup = predict.Predictor(session, as_of=fixture.utc_kickoff)
+    summary_no_lineup = predictor_no_lineup.predict_match(fixture)
+    assert summary_no_lineup["lineup_based"] is False
+
+    for pid in HOME_STARTERS:
+        session.add(Lineup(match_id=fixture.id, team_id=home.id, player_name=f"H{pid}", starter=True, player_id=pid))
+    for pid in AWAY_STARTERS:
+        session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
+    session.commit()
+
+    predictor_with_lineup = predict.Predictor(session, as_of=fixture.utc_kickoff)
+    summary_with_lineup = predictor_with_lineup.predict_match(fixture)
+    assert summary_with_lineup["lineup_based"] is True
+    assert summary_with_lineup["home_win_prob"] > summary_no_lineup["home_win_prob"]
+
+
+def test_predictor_falls_back_when_lineup_partial(session):
+    """Fewer than MIN_STARTERS_FOR_LIVE_STRENGTH resolved starters on one
+    side must not be trusted as "confirmed" -- falls back to team Elo, same
+    as no lineup at all."""
+    comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    session.add(comp)
+    session.flush()
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    fixture = Match(competition_id=comp.id, utc_kickoff=dt.datetime(2026, 6, 2), status="scheduled", home_team_id=home.id, away_team_id=away.id, source="test")
+    session.add(fixture)
+    session.flush()
+    # Only 3 resolved starters for home -- below player_elo.MIN_STARTERS_FOR_LIVE_STRENGTH.
+    for pid in (1, 2, 3):
+        session.add(Lineup(match_id=fixture.id, team_id=home.id, player_name=f"H{pid}", starter=True, player_id=pid))
+    for pid in range(101, 112):
+        session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
+    session.commit()
+
+    predictor = predict.Predictor(session, as_of=fixture.utc_kickoff)
+    summary = predictor.predict_match(fixture)
+    assert summary["lineup_based"] is False
+
+
+def test_generate_predictions_persists_lineup_based_flag(session):
+    comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    session.add(comp)
+    session.flush()
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    fixture = Match(competition_id=comp.id, utc_kickoff=dt.datetime(2026, 6, 2), status="scheduled", home_team_id=home.id, away_team_id=away.id, source="test")
+    session.add(fixture)
+    session.commit()
+
+    predict.generate_predictions(session)
+    stored = session.query(predict.Prediction).filter_by(match_id=fixture.id).one()
+    assert stored.lineup_based is False  # no Lineup rows at all for this fixture
 
 
 # ---------- elo.py: ClubElo cross-league anchoring ----------

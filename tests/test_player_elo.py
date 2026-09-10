@@ -9,13 +9,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Match, PlayerRating, Team
+from app.models import Base, Lineup, Match, PlayerRating, Team
 from ingest.bigballs_history import _connect
 from model.player_elo import (
     BASE_RATING,
+    MIN_STARTERS_FOR_LIVE_STRENGTH,
     SHRINKAGE_APPEARANCES_THRESHOLD,
     SOURCE_INTERNAL,
     _replay_player_elo,
+    live_team_strength,
     load_persisted_player_ratings,
     persist_player_ratings,
     player_strength,
@@ -265,6 +267,74 @@ def test_replay_exclude_match_id_omits_that_match(session, appearances_conn):
     ratings, counts = _replay_player_elo(session, appearances_conn, exclude_match_id=match.id)
     assert ratings == {}
     assert counts == {}
+
+
+# ---------- live_team_strength ----------
+
+
+def _lineup_row(session, match_id, team_id, player_id, *, starter=True):
+    row = Lineup(
+        match_id=match_id,
+        team_id=team_id,
+        player_name=f"Player {player_id}",
+        starter=starter,
+        player_id=player_id,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def test_live_team_strength_none_below_min_starters(session):
+    home, away = _team(session, "Home"), _team(session, "Away")
+    match = _match(session, home, away, home_goals=0, away_goals=0, kickoff=dt.datetime(2026, 1, 1))
+    for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH - 1):
+        _lineup_row(session, match.id, home.id, player_id=i + 1)
+
+    assert live_team_strength(session, match.id, home.id, ratings={}, appearance_counts={}) is None
+
+
+def test_live_team_strength_computed_at_min_starters(session):
+    home, away = _team(session, "Home"), _team(session, "Away")
+    match = _match(session, home, away, home_goals=0, away_goals=0, kickoff=dt.datetime(2026, 1, 1))
+    for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH):
+        _lineup_row(session, match.id, home.id, player_id=i + 1)
+
+    strength = live_team_strength(session, match.id, home.id, ratings={}, appearance_counts={})
+    assert strength == pytest.approx(BASE_RATING)  # no ratings on file yet -> every starter defaults to BASE_RATING
+
+
+def test_live_team_strength_ignores_bench_and_unresolved_names(session):
+    home, away = _team(session, "Home"), _team(session, "Away")
+    match = _match(session, home, away, home_goals=0, away_goals=0, kickoff=dt.datetime(2026, 1, 1))
+    for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH):
+        _lineup_row(session, match.id, home.id, player_id=i + 1)
+    _lineup_row(session, match.id, home.id, player_id=999, starter=False)  # bench: shouldn't count
+    session.add(Lineup(match_id=match.id, team_id=home.id, player_name="Unresolved", starter=True, player_id=None))
+    session.flush()
+
+    ratings = {1: 1700.0}
+    strength = live_team_strength(session, match.id, home.id, ratings=ratings, appearance_counts={1: SHRINKAGE_APPEARANCES_THRESHOLD})
+    # Only the MIN_STARTERS_FOR_LIVE_STRENGTH resolved starters count -> player
+    # 1's 1700 pulls the mean above BASE_RATING, proving bench/unresolved rows
+    # were excluded rather than silently dragging it back toward BASE_RATING.
+    assert strength > BASE_RATING
+
+
+def test_live_team_strength_reflects_stronger_starters(session):
+    home, away = _team(session, "Strong XI"), _team(session, "Weak XI")
+    match = _match(session, home, away, home_goals=0, away_goals=0, kickoff=dt.datetime(2026, 1, 1))
+    for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH):
+        _lineup_row(session, match.id, home.id, player_id=i + 1)
+        _lineup_row(session, match.id, away.id, player_id=100 + i)
+
+    ratings = {i + 1: 1800.0 for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH)}
+    ratings.update({100 + i: 1300.0 for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH)})
+    counts = {pid: SHRINKAGE_APPEARANCES_THRESHOLD for pid in ratings}
+
+    home_strength = live_team_strength(session, match.id, home.id, ratings, counts)
+    away_strength = live_team_strength(session, match.id, away.id, ratings, counts)
+    assert home_strength > away_strength
 
 
 # ---------- persistence ----------

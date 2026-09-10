@@ -54,6 +54,7 @@ from app.config import HIGHLIGHTLY_API_BASE, settings
 from app.models import Competition, IngestLog, Lineup, Match
 from ingest.cache import fetch_text
 from ingest.resolve import build_alias_pool, resolve_existing_team
+from ingest.resolve_players import resolve_or_create_player
 from ingest.seasons import current_season_start_year
 
 SOURCE = "highlightly"
@@ -137,6 +138,20 @@ def _sync_match_lineups(session: Session, match: Match, hl_match_id: int) -> boo
                     continue
                 raw_position = player.get("position") or ""
                 position = _POSITION_MAP.get(raw_position, (raw_position[:1].upper() or None))
+                source_player_id = str(player["id"]) if player.get("id") is not None else None
+                # Highlightly's own id space, distinct from bigballsdata's —
+                # a UEFA club's players usually already have a Player row
+                # from their domestic squad, so this mostly resolves via the
+                # name-based channel rather than a strong-id match. See
+                # ingest/resolve_players.py.
+                resolved = resolve_or_create_player(
+                    session,
+                    name,
+                    SOURCE,
+                    team_id=team_id,
+                    source_player_id=source_player_id,
+                    context=f"highlightly lineup match_id={match.id}",
+                )
                 session.add(
                     Lineup(
                         match_id=match.id,
@@ -146,7 +161,8 @@ def _sync_match_lineups(session: Session, match: Match, hl_match_id: int) -> boo
                         jersey_number=player.get("number"),
                         starter=True,
                         order_index=order_index,
-                        bbs_player_id=str(player["id"]) if player.get("id") is not None else None,
+                        bbs_player_id=source_player_id,
+                        player_id=resolved.id,
                         synced_at=dt.datetime.utcnow(),
                     )
                 )
@@ -157,6 +173,15 @@ def _sync_match_lineups(session: Session, match: Match, hl_match_id: int) -> boo
                 continue
             raw_position = player.get("position") or ""
             position = _POSITION_MAP.get(raw_position, (raw_position[:1].upper() or None))
+            source_player_id = str(player["id"]) if player.get("id") is not None else None
+            resolved = resolve_or_create_player(
+                session,
+                name,
+                SOURCE,
+                team_id=team_id,
+                source_player_id=source_player_id,
+                context=f"highlightly lineup match_id={match.id}",
+            )
             session.add(
                 Lineup(
                     match_id=match.id,
@@ -166,7 +191,8 @@ def _sync_match_lineups(session: Session, match: Match, hl_match_id: int) -> boo
                     jersey_number=player.get("number"),
                     starter=False,
                     order_index=order_index,
-                    bbs_player_id=str(player["id"]) if player.get("id") is not None else None,
+                    bbs_player_id=source_player_id,
+                    player_id=resolved.id,
                     synced_at=dt.datetime.utcnow(),
                 )
             )

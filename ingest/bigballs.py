@@ -45,6 +45,7 @@ from app.config import BIGBALLS_API_BASE, settings
 from app.models import Competition, IngestLog, Lineup, Match, PlayerMatchStat, Team
 from ingest.cache import fetch_text
 from ingest.resolve import build_alias_pool, resolve_existing_team
+from ingest.resolve_players import resolve_or_create_player
 
 SOURCE = "bigballs"
 
@@ -134,6 +135,19 @@ def _sync_match_lineups(session: Session, match: Match, bbs_match_id: str, *, ma
             name = entry.get("name")
             if not name:
                 continue
+            # Same bigballsdata.com player id space as the historical
+            # /stats backfill (ingest/bigballs_history.py) — a player
+            # already rated from that backfill resolves to the SAME Player
+            # here via the strong-id channel, so model/predict.py can look
+            # up a real rating for this confirmed lineup, not just a name.
+            player = resolve_or_create_player(
+                session,
+                name,
+                SOURCE,
+                team_id=team_id,
+                source_player_id=entry.get("player_id"),
+                context=f"bigballs lineup match_id={match.id}",
+            )
             session.add(
                 Lineup(
                     match_id=match.id,
@@ -144,6 +158,7 @@ def _sync_match_lineups(session: Session, match: Match, bbs_match_id: str, *, ma
                     starter=bool(entry.get("starter")),
                     order_index=order_index,
                     bbs_player_id=entry.get("player_id"),
+                    player_id=player.id,
                     synced_at=dt.datetime.utcnow(),
                 )
             )

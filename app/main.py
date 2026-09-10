@@ -28,7 +28,9 @@ from app.models import (
     Team,
     TeamAlias,
 )
+from ingest.bigballs import LEAGUE_CODES as BIGBALLS_LEAGUE_CODES
 from ingest.football_data_org_aliases import FD_ORG_TO_CANONICAL
+from ingest.highlightly import LEAGUE_IDS as HIGHLIGHTLY_LEAGUE_IDS
 from ingest.live_scores import fetch_live_matches
 from ingest.resolve import normalize
 from ingest.seasons import current_season_start_year
@@ -67,6 +69,14 @@ templates.env.globals["asset_version"] = _asset_version
 # see the CSS variable layer in base.html (.theme-ucl). One dict entry + one
 # CSS block adds a future competition theme; no template fork needed.
 COMPETITION_THEME_CLASS = {"champions-league": "theme-ucl"}
+
+# Competitions with ANY lineup source at all (see ingest/bigballs.py and
+# ingest/highlightly.py) -- distinguishes "this match's prediction hasn't
+# sharpened yet, but will once lineups land" from "this competition has no
+# player-data source, so it never will" on the match page's prediction card
+# (see match.html and model/predict.py's Prediction.lineup_based). Eredivisie,
+# Primeira Liga, Süper Lig and Azerbaijan currently fall in the second group.
+PLAYER_DATA_COMPETITION_SLUGS = set(BIGBALLS_LEAGUE_CODES) | set(HIGHLIGHTLY_LEAGUE_IDS)
 
 # Static files live in public/, which Vercel serves straight from its CDN —
 # requests for /static/* are answered at the edge and never reach this
@@ -1325,6 +1335,7 @@ def match_page(request: Request, match_id: int):
             away=away,
             prediction=prediction,
             no_prediction_reason=no_prediction_reason,
+            player_data_available=bool(competition and competition.slug in PLAYER_DATA_COMPETITION_SLUGS),
             live_state=live_state,
             home_color=home_color,
             away_color=away_color,

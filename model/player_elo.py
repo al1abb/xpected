@@ -48,7 +48,7 @@ import sqlite3
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Match, PlayerRating
+from app.models import Lineup, Match, PlayerRating
 from ingest.bigballs_history import _connect
 from model.elo import BASE_RATING, _expected_home_score, _goal_diff_multiplier
 
@@ -60,6 +60,14 @@ K_BASE = 20.0
 # for a thin-history league fit. Reaches full trust (weight 1.0) at exactly
 # this many appearances.
 SHRINKAGE_APPEARANCES_THRESHOLD = 10
+
+# A "confirmed lineup" for team-strength purposes needs at least this many
+# resolved starters — not a strict 11, to tolerate the occasional data quirk
+# (one unresolved name, a keeper substitution mid-warm-up) without silently
+# degrading to a near-empty, unrepresentative XI. Below this, live_team_strength
+# returns None so the caller falls back to team-level Elo rather than trusting
+# a partial lineup.
+MIN_STARTERS_FOR_LIVE_STRENGTH = 7
 
 SOURCE_INTERNAL = "internal"
 
@@ -93,6 +101,38 @@ def team_strength(
         sum(player_strength(pid, ratings, appearance_counts) * w for pid, w in weighted_player_ids if w > 0)
         / total_weight
     )
+
+
+def live_team_strength(
+    session: Session,
+    match_id: int,
+    team_id: int,
+    ratings: dict[int, float],
+    appearance_counts: dict[int, int],
+) -> float | None:
+    """team_strength() for an upcoming match's CONFIRMED starting XI (see
+    app.models.Lineup, written by ingest/bigballs.py and
+    ingest/highlightly.py), not a played one — there are no minutes yet
+    because the match hasn't kicked off, so every resolved starter counts
+    equally (weight 1.0) rather than by minutes played. This is the "who is
+    actually on the pitch today" signal model/predict.py prefers over team-
+    level Elo whenever it's available (see that module's Predictor).
+
+    None whenever there isn't a trustworthy confirmed lineup for this side:
+    no Lineup rows at all (most of a match's life — see
+    MIN_STARTERS_FOR_LIVE_STRENGTH), or fewer than that many starters
+    resolved to a real Player. A starter with no resolved player_id is
+    skipped rather than guessed at — see Lineup.player_id's docstring for
+    why that can be null."""
+    starters = (
+        session.query(Lineup.player_id)
+        .filter_by(match_id=match_id, team_id=team_id, starter=True)
+        .filter(Lineup.player_id.isnot(None))
+        .all()
+    )
+    if len(starters) < MIN_STARTERS_FOR_LIVE_STRENGTH:
+        return None
+    return team_strength([(player_id, 1.0) for (player_id,) in starters], ratings, appearance_counts)
 
 
 def _load_appearances_by_match(conn: sqlite3.Connection, match_ids: set[int]) -> dict[int, list[tuple[int, int, int]]]:
