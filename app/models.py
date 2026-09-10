@@ -289,6 +289,75 @@ class SquadPlayer(Base):
     team: Mapped[Team] = relationship()
 
 
+class Player(Base):
+    """A real person, resolved across sources — the identity layer
+    ingest/resolve_players.py builds and model/player_elo.py rates.
+
+    Unlike Team, there is no single reliable name string to key on: sources
+    disagree on spelling AND on completeness (a current squad list gives a
+    full name; a historical box score often gives only 'M. Hermansen'). See
+    ingest/resolve_players.py's docstring for the two-channel resolution
+    this schema supports: a stable per-source id where one exists
+    (PlayerAlias.source_player_id), and a team-scoped surname+initial match
+    where it doesn't (normalized_surname/first_initial below)."""
+
+    __tablename__ = "players"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    canonical_name: Mapped[str] = mapped_column(String(128))
+    normalized_surname: Mapped[str] = mapped_column(String(64), index=True)
+    first_initial: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    date_of_birth: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    primary_position: Mapped[str | None] = mapped_column(String(8), nullable=True)  # G/D/M/F
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class PlayerAlias(Base):
+    """How a raw name/id from one source maps to a Player. Two independent
+    unique constraints back the two resolution channels in
+    ingest/resolve_players.py: (source, source_player_id) for a stable
+    per-source id — team-independent, so it keeps resolving to the same
+    Player across a transfer — and (alias, source, team_id) for a
+    team-scoped name match, needed because player surnames (unlike team
+    names) are routinely shared by more than one person. SQLite treats each
+    NULL as distinct under a UNIQUE constraint, so rows using only one
+    channel never collide with each other on the column they don't use."""
+
+    __tablename__ = "player_aliases"
+    __table_args__ = (
+        UniqueConstraint("source", "source_player_id", name="uq_player_alias_source_id"),
+        UniqueConstraint("alias", "source", "team_id", name="uq_player_alias_name_source_team"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    alias: Mapped[str] = mapped_column(String(128))
+    source: Mapped[str] = mapped_column(String(32))
+    source_player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    player: Mapped[Player] = relationship()
+    team: Mapped[Team | None] = relationship()
+
+
+class UnresolvedPlayerAlias(Base):
+    """Names ingest could not confidently map to one Player — e.g. two
+    same-surname, same-initial players on one team's roster. Reviewed
+    manually, never guessed; mirrors UnresolvedAlias's role for teams."""
+
+    __tablename__ = "unresolved_player_aliases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    raw_name: Mapped[str] = mapped_column(String(128))
+    source: Mapped[str] = mapped_column(String(32))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    resolved_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
+
+
 class Lineup(Base):
     """Per-match starting XI + bench. Two sources, covering disjoint
     competitions so a given match's rows only ever come from one of them:

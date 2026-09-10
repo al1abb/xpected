@@ -6,6 +6,10 @@ venv/
 data/*.db
 !data/app.db
 data/*.db-journal
+# Raw per-player appearance history for the player-Elo backfill (ingest/bigballs_history.py) —
+# deliberately kept out of app.db and out of git; see that module's docstring for why.
+data/appearances.sqlite
+data/appearances.sqlite-journal
 data/tune_accuracy_results.json
 data/raw/
 !data/raw/.gitkeep
