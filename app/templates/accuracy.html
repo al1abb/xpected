@@ -34,12 +34,27 @@
   </div>
   {% if result.market_baseline.n %}
   <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5">
-    <div class="text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Bookmaker odds (reference)</div>
+    <div class="text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">
+      {% if result.market_bookmaker_counts and result.market_bookmaker_counts.pinnacle_closing %}
+      Pinnacle closing odds
+      {% else %}
+      Bookmaker odds (reference)
+      {% endif %}
+    </div>
     <div class="text-3xl font-black tabular-nums text-gray-600 dark:text-gray-300">{{ '%.1f'|format(result.market_baseline.accuracy * 100) }}%</div>
     <div class="text-xs text-gray-500 mt-1">
       {{ result.market_baseline.correct if result.market_baseline.correct is defined else (result.market_baseline.n * result.market_baseline.accuracy)|round|int }}
       of {{ result.market_baseline.n }} correct · RPS {{ '%.3f'|format(result.market_baseline.rps) }}
     </div>
+    {% if result.market_bookmaker_counts %}
+    <div class="text-[11px] text-gray-400 mt-2">
+      {% if result.market_bookmaker_counts.pinnacle_closing %}
+      {{ result.market_bookmaker_counts.pinnacle_closing }} matches vs Pinnacle's closing line{% if result.market_bookmaker_counts.closing_avg or result.market_bookmaker_counts.pre_match_avg %}, rest vs a cross-bookmaker average{% endif %} — the sharpest single line available.
+      {% else %}
+      Cross-bookmaker closing average — no Pinnacle-specific line for these matches.
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 </div>
@@ -67,7 +82,8 @@
 </p>
 {% endif %}
 
-<h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-3">By competition, best to worst RPS</h2>
+<h2 class="text-xs font-bold text-gray-400 dark:text-gray-400 uppercase tracking-widest mb-1">By competition, best to worst RPS</h2>
+<p class="text-xs text-gray-400 mb-3 max-w-2xl">RPS shown as model vs market (lower is better either side) — the gap is how far we are from what the sharpest bookmaker line already knows.</p>
 <div class="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
   {% for m in by_competition %}
   <a href="/competition/{{ m.slug }}" class="flex items-center gap-4 px-4 py-3 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
@@ -76,7 +92,9 @@
       <span class="block h-full rounded-full bg-indigo-500" style="width: {{ m.accuracy * 100 }}%;"></span>
     </span>
     <span class="w-12 shrink-0 text-right tabular-nums font-semibold">{{ '%.0f'|format(m.accuracy * 100) }}%</span>
-    <span class="w-16 shrink-0 text-right tabular-nums text-gray-400">{{ '%.3f'|format(m.rps) }}</span>
+    <span class="w-24 shrink-0 text-right tabular-nums text-gray-400">
+      {{ '%.3f'|format(m.rps) }}{% if m.market and m.market.n %}<span class="text-gray-300 dark:text-gray-600"> / {{ '%.3f'|format(m.market.rps) }}</span>{% endif %}
+    </span>
     <span class="w-14 shrink-0 text-right tabular-nums text-gray-400">{{ m.n }} gm</span>
   </a>
   {% endfor %}

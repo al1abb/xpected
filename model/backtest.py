@@ -77,8 +77,26 @@ def _home_advantage_baseline(session: Session, cutoff: dt.datetime) -> tuple[flo
     return tuple(c / total for c in counts)
 
 
+# Preference order when a match carries more than one odds snapshot.
+# 'pinnacle_closing' first: Pinnacle's closing line is the sharpest single
+# book this app has access to (see ingest/footballdata_csv.py's PSC* parsing)
+# — the same benchmark playerelo.football reports its own accuracy against.
+# Falls back to the cross-bookmaker closing/pre-match averages that existed
+# before Pinnacle-specific odds were ingested, so older backtests and matches
+# without a Pinnacle line still get a market baseline.
+_BOOKMAKER_PREFERENCE = ("pinnacle_closing", "closing_avg", "pre_match_avg")
+
+
+def _preferred_odds_snapshot(match: Match) -> OddsSnapshot | None:
+    usable = [o for o in match.odds if o.home_odds and o.draw_odds and o.away_odds]
+    if not usable:
+        return None
+    by_bookmaker = {o.bookmaker: o for o in usable}
+    return next((by_bookmaker[b] for b in _BOOKMAKER_PREFERENCE if b in by_bookmaker), usable[0])
+
+
 def devigged_market_probs(match: Match) -> tuple[float, float, float] | None:
-    snapshot = next((o for o in match.odds if o.home_odds and o.draw_odds and o.away_odds), None)
+    snapshot = _preferred_odds_snapshot(match)
     if snapshot is None:
         return None
     raw = [1 / snapshot.home_odds, 1 / snapshot.draw_odds, 1 / snapshot.away_odds]
@@ -314,7 +332,9 @@ def run_backtest(
     home_adv_overall = Scoreboard()
     market_overall = Scoreboard()
     model_by_competition: dict[str, Scoreboard] = {}
+    market_by_competition: dict[str, Scoreboard] = {}
     market_matches_scored = 0
+    market_bookmaker_counts: dict[str, int] = {}
     raw_predictions: list[dict] = []
     # Draw-ceiling bookkeeping (see wilson_interval's docstring / the accuracy
     # page copy): a draw is picked as the single most-likely outcome so rarely
@@ -375,10 +395,15 @@ def run_backtest(
             if collect_predictions:
                 raw_predictions.append({"probs": model_probs, "actual": actual, "match_id": match.id})
 
-            market_probs = devigged_market_probs(match)
-            if market_probs is not None:
+            snapshot = _preferred_odds_snapshot(match)
+            if snapshot is not None:
+                raw = [1 / snapshot.home_odds, 1 / snapshot.draw_odds, 1 / snapshot.away_odds]
+                total = sum(raw)
+                market_probs = tuple(r / total for r in raw)
                 market_overall.add(market_probs, actual)
+                market_by_competition.setdefault(slug, Scoreboard()).add(market_probs, actual)
                 market_matches_scored += 1
+                market_bookmaker_counts[snapshot.bookmaker] = market_bookmaker_counts.get(snapshot.bookmaker, 0) + 1
                 if int(np.argmax(market_probs)) == OUTCOME_DRAW:
                     market_favours_draw += 1
                     if actual == OUTCOME_DRAW:
@@ -429,7 +454,9 @@ def run_backtest(
         "model": model_overall.summary(),
         "home_advantage_baseline": home_adv_overall.summary(),
         "market_baseline": market_overall.summary() if market_matches_scored else {"n": 0},
+        "market_bookmaker_counts": market_bookmaker_counts,
         "by_competition": {slug: sb.summary() for slug, sb in model_by_competition.items()},
+        "market_by_competition": {slug: sb.summary() for slug, sb in market_by_competition.items()},
         "beats_home_advantage_baseline": (
             model_overall.n > 0
             and home_adv_overall.n > 0

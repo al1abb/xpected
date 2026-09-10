@@ -109,6 +109,13 @@ def parse_results_csv(text: str) -> list[dict]:
         odds_h = _float_or_none(row.get("AvgCH", "")) or _float_or_none(row.get("AvgH", ""))
         odds_d = _float_or_none(row.get("AvgCD", "")) or _float_or_none(row.get("AvgD", ""))
         odds_a = _float_or_none(row.get("AvgCA", "")) or _float_or_none(row.get("AvgA", ""))
+        # Pinnacle closing (PSC*) specifically — the sharpest single line this
+        # source carries, kept as its own snapshot rather than folded into the
+        # cross-bookmaker average above so the backtest can benchmark against
+        # it directly (see model/backtest.py::devigged_market_probs).
+        pinnacle_h = _float_or_none(row.get("PSCH", ""))
+        pinnacle_d = _float_or_none(row.get("PSCD", ""))
+        pinnacle_a = _float_or_none(row.get("PSCA", ""))
         rows.append(
             {
                 "kickoff": kickoff,
@@ -132,6 +139,9 @@ def parse_results_csv(text: str) -> list[dict]:
                 "odds_home": odds_h,
                 "odds_draw": odds_d,
                 "odds_away": odds_a,
+                "pinnacle_closing_home": pinnacle_h,
+                "pinnacle_closing_draw": pinnacle_d,
+                "pinnacle_closing_away": pinnacle_a,
             }
         )
     return rows
@@ -250,6 +260,35 @@ def _upsert_match(session: Session, competition_id: int, row: dict) -> bool:
                 odds_home,
                 odds_draw,
                 odds_away,
+            )
+
+    pin_home, pin_draw, pin_away = (
+        row.get("pinnacle_closing_home"),
+        row.get("pinnacle_closing_draw"),
+        row.get("pinnacle_closing_away"),
+    )
+    if pin_home and pin_draw and pin_away:
+        existing_pinnacle = (
+            session.query(OddsSnapshot)
+            .filter_by(match_id=match.id, source=SOURCE, bookmaker="pinnacle_closing")
+            .one_or_none()
+        )
+        if existing_pinnacle is None:
+            session.add(
+                OddsSnapshot(
+                    match_id=match.id,
+                    bookmaker="pinnacle_closing",
+                    home_odds=pin_home,
+                    draw_odds=pin_draw,
+                    away_odds=pin_away,
+                    source=SOURCE,
+                )
+            )
+        else:
+            existing_pinnacle.home_odds, existing_pinnacle.draw_odds, existing_pinnacle.away_odds = (
+                pin_home,
+                pin_draw,
+                pin_away,
             )
 
     return is_new

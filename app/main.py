@@ -1457,8 +1457,12 @@ def accuracy_page(request: Request):
 
         by_competition = []
         if result and not result.get("error"):
+            market_by_competition = result.get("market_by_competition", {})
             by_competition = sorted(
-                ({"slug": slug, **metrics} for slug, metrics in result["by_competition"].items()),
+                (
+                    {"slug": slug, **metrics, "market": market_by_competition.get(slug)}
+                    for slug, metrics in result["by_competition"].items()
+                ),
                 key=lambda m: m["rps"],
             )
 

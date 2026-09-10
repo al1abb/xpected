@@ -8,8 +8,16 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Match, ModelRun, Prediction, Team
-from model.backtest import brier, live_tracking_summary, log_loss, rps, tracked_predictions_page, wilson_interval
+from app.models import Base, Match, ModelRun, OddsSnapshot, Prediction, Team
+from model.backtest import (
+    brier,
+    devigged_market_probs,
+    live_tracking_summary,
+    log_loss,
+    rps,
+    tracked_predictions_page,
+    wilson_interval,
+)
 
 
 @pytest.fixture()
@@ -57,6 +65,71 @@ def test_log_loss_perfect_prediction_near_zero():
 
 def test_log_loss_confident_wrong_prediction_is_large():
     assert log_loss((0.99, 0.005, 0.005), actual=2) > 4.0
+
+
+# ---------- devigged_market_probs ----------
+
+
+def _match_with_odds(session, *odds_rows):
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    match = Match(
+        competition_id=1,
+        utc_kickoff=dt.datetime(2026, 1, 10),
+        status="finished",
+        home_team_id=home.id,
+        away_team_id=away.id,
+        home_goals=1,
+        away_goals=0,
+        source="test",
+    )
+    session.add(match)
+    session.flush()
+    for bookmaker, home_odds, draw_odds, away_odds in odds_rows:
+        session.add(
+            OddsSnapshot(
+                match_id=match.id,
+                bookmaker=bookmaker,
+                home_odds=home_odds,
+                draw_odds=draw_odds,
+                away_odds=away_odds,
+                source="test",
+            )
+        )
+    session.flush()
+    session.refresh(match)
+    return match
+
+
+def test_devigged_market_probs_prefers_pinnacle_closing_over_average(session):
+    # Deliberately different lines so the test can tell which one was used —
+    # if the preference order were wrong, this would silently pick the
+    # average instead of Pinnacle's sharper close.
+    match = _match_with_odds(
+        session,
+        ("closing_avg", 2.00, 3.40, 4.00),
+        ("pinnacle_closing", 1.80, 3.60, 4.50),
+    )
+    probs = devigged_market_probs(match)
+    raw_pinnacle = [1 / 1.80, 1 / 3.60, 1 / 4.50]
+    total = sum(raw_pinnacle)
+    expected = tuple(r / total for r in raw_pinnacle)
+    assert probs == pytest.approx(expected)
+
+
+def test_devigged_market_probs_falls_back_when_no_pinnacle_line(session):
+    match = _match_with_odds(session, ("closing_avg", 2.00, 3.40, 4.00))
+    probs = devigged_market_probs(match)
+    raw = [1 / 2.00, 1 / 3.40, 1 / 4.00]
+    total = sum(raw)
+    expected = tuple(r / total for r in raw)
+    assert probs == pytest.approx(expected)
+
+
+def test_devigged_market_probs_none_when_no_usable_odds(session):
+    match = _match_with_odds(session)
+    assert devigged_market_probs(match) is None
 
 
 def test_log_loss_handles_zero_probability_without_crashing():
