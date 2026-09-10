@@ -132,12 +132,19 @@ class Predictor:
         xi_per_day: float | None = None,
         ensemble_weight: float | None = None,
         rest_adjustment_enabled: bool = True,
+        use_lineup_strength: bool = True,
     ):
         self.session = session
         self.as_of = as_of or dt.datetime.utcnow()
         self.xi_per_day = xi_per_day if xi_per_day is not None else dixon_coles.XI_PER_DAY
         self.ensemble_weight = ensemble_weight if ensemble_weight is not None else ENSEMBLE_WEIGHT
         self.rest_adjustment_enabled = rest_adjustment_enabled
+        # Off switch for the A/B comparison in scripts/backtest_lineup_impact.py
+        # (Phase 5: does the lineup-derived signal actually help, measured
+        # against the exact same matches with it forced off). Never False in
+        # normal operation — scripts/refresh.py and
+        # scripts/resharpen_predictions.py both use the default.
+        self.use_lineup_strength = use_lineup_strength
         self.elo_ratings = elo.compute_ratings(session, as_of=as_of, exclude_match_id=exclude_match_id)
         self.overall_match_counts = elo.match_count_by_team(session, as_of=as_of)
         # Same as_of/exclude_match_id discipline as team Elo above — a fresh
@@ -350,15 +357,21 @@ class Predictor:
         Falls back to team-level Elo otherwise, which is the common case:
         lineups publish ~1h before kickoff, so most of a match's life is
         spent here. Never silent — predict_match surfaces which source was
-        used as Prediction.lineup_based, and the match page labels it."""
-        home_strength = player_elo.live_team_strength(
-            self.session, match.id, match.home_team_id, self.player_ratings, self.player_appearance_counts
-        )
-        away_strength = player_elo.live_team_strength(
-            self.session, match.id, match.away_team_id, self.player_ratings, self.player_appearance_counts
-        )
-        if home_strength is not None and away_strength is not None:
-            return home_strength, away_strength, True
+        used as Prediction.lineup_based, and the match page labels it.
+
+        self.use_lineup_strength=False short-circuits straight to the team-
+        Elo fallback regardless of lineup data — the A/B toggle for
+        scripts/backtest_lineup_impact.py, never used outside that
+        comparison."""
+        if self.use_lineup_strength:
+            home_strength = player_elo.live_team_strength(
+                self.session, match.id, match.home_team_id, self.player_ratings, self.player_appearance_counts
+            )
+            away_strength = player_elo.live_team_strength(
+                self.session, match.id, match.away_team_id, self.player_ratings, self.player_appearance_counts
+            )
+            if home_strength is not None and away_strength is not None:
+                return home_strength, away_strength, True
         return (
             self.elo_ratings.get(match.home_team_id, elo.BASE_RATING),
             self.elo_ratings.get(match.away_team_id, elo.BASE_RATING),

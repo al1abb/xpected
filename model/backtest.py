@@ -313,6 +313,7 @@ def run_backtest(
     xi_per_day: float | None = None,
     ensemble_weight: float | None = None,
     rest_adjustment_enabled: bool = True,
+    use_lineup_strength: bool = True,
     collect_predictions: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -372,6 +373,7 @@ def run_backtest(
             xi_per_day=xi_per_day,
             ensemble_weight=ensemble_weight,
             rest_adjustment_enabled=rest_adjustment_enabled,
+            use_lineup_strength=use_lineup_strength,
         )
         home_adv_probs = _home_advantage_baseline(session, cutoff)
 
