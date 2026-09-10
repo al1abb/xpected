@@ -358,6 +358,37 @@ class UnresolvedPlayerAlias(Base):
     resolved_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
 
 
+class PlayerRating(Base):
+    """One player's Elo, as of one date — the persisted output of
+    model/player_elo.py's replay over data/appearances.sqlite, mirroring
+    EloRating's own role for teams (compute offline, persist, plain SELECT
+    at request time; see model/elo.py::persist_ratings).
+
+    `appearances` is carried alongside `elo` because a live read needs both:
+    model/player_elo.py's shrinkage-toward-BASE_RATING math (a thin-history
+    player should count for less in a team-strength estimate) depends on
+    knowing how many appearances backed a given rating, not just the number
+    itself — recomputing that by re-scanning data/appearances.sqlite on
+    every read would defeat the point of persisting in the first place.
+
+    Deliberately NOT kept forever the way elo_ratings is (see
+    model/player_elo.py::prune_player_ratings): nothing reads historical
+    player-rating snapshots yet, and one row per resolved player per day
+    (thousands, growing with every backfilled season) would repeat
+    scripts/prune_predictions.py's exact unbounded-growth problem inside a
+    git-linked database if left unpruned from day one."""
+
+    __tablename__ = "player_ratings"
+    __table_args__ = (UniqueConstraint("player_id", "as_of_date", "source", name="uq_player_rating_player_date_source"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    as_of_date: Mapped[dt.date] = mapped_column(Date)
+    elo: Mapped[float] = mapped_column(Float)
+    appearances: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(32), default="internal")
+
+
 class Lineup(Base):
     """Per-match starting XI + bench. Two sources, covering disjoint
     competitions so a given match's rows only ever come from one of them:

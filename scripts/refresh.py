@@ -26,7 +26,15 @@ from ingest.football_data_org_players import sync_scorers, sync_squads
 from ingest.news import sync_news
 from ingest.sync import run_api_sync, run_current_season_fixture_sync, run_free_sync
 from model.elo import compute_ratings, persist_ratings
+from model.player_elo import compute_player_ratings, persist_player_ratings, prune_player_ratings
 from model.predict import generate_predictions
+
+
+def _refresh_player_ratings(session) -> str:
+    ratings, appearance_counts = compute_player_ratings(session)
+    stored = persist_player_ratings(session, ratings, appearance_counts)
+    pruned = prune_player_ratings(session)
+    return f"{stored} player ratings stored, {pruned} stale snapshot(s) pruned"
 
 
 def _step(name: str, fn) -> None:
@@ -67,6 +75,12 @@ def main() -> None:
             "persist Elo ratings for the web app",
             lambda: f"{persist_ratings(session, compute_ratings(session))} team ratings stored",
         )
+
+        # Player-level Elo, replayed from data/appearances.sqlite (see
+        # ingest/bigballs_history.py + model/player_elo.py). Pruned in the
+        # same step it's persisted — see PlayerRating's own docstring for
+        # why this can't wait, unlike team elo_ratings.
+        _step("persist player Elo ratings for the web app", lambda: _refresh_player_ratings(session))
 
         # Current-season squads + scorers (football-data.org) — the fix for
         # PlayerStat being stuck on 2024/25 data, since API-Football's free
