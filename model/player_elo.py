@@ -278,6 +278,19 @@ def persist_player_ratings(
     return len(ratings)
 
 
+def refresh_player_ratings(session: Session) -> str:
+    """compute_player_ratings -> persist -> prune, in one call. The only
+    place this can run for real is a workflow whose data/appearances.sqlite
+    actually has appearance rows in it (restored from actions/cache) — see
+    .github/workflows/backfill-appearances.yml, which is the sole writer of
+    that file's persisted history. Also used by scripts/refresh.py for a
+    local run where the file exists on disk directly."""
+    ratings, appearance_counts = compute_player_ratings(session)
+    stored = persist_player_ratings(session, ratings, appearance_counts)
+    pruned = prune_player_ratings(session)
+    return f"{stored} player ratings stored, {pruned} stale snapshot(s) pruned"
+
+
 def load_persisted_player_ratings(session: Session) -> tuple[dict[int, float], dict[int, int]]:
     """({player_id: rating}, {player_id: appearance count}) from each
     player's single most recent persisted snapshot — the plain-SELECT read

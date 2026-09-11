@@ -74,13 +74,21 @@ jobs:
           path: data/appearances.sqlite
           key: appearances-db-${{ github.run_id }}
 
-      - name: Commit and push if player identity data changed
+      # This is the only workflow whose data/appearances.sqlite ever has
+      # real rows in it (restored above from this workflow's own cache) —
+      # daily-refresh.yml has no such cache step, so the equivalent call
+      # there computes against an empty file. See
+      # scripts/recompute_player_ratings.py's own docstring.
+      - name: Recompute player Elo ratings from the deepened backfill
+        run: python scripts/recompute_player_ratings.py
+
+      - name: Commit and push if player identity or rating data changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/app.db
           if git diff --cached --quiet; then
-            echo "No new players resolved, skipping commit."
+            echo "No new players resolved or ratings changed, skipping commit."
           else
             git commit -m "Historical appearance backfill: $(date -u +%Y-%m-%d)"
             git push
