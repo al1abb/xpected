@@ -72,11 +72,20 @@ jobs:
         env:
           BIGBALLS_API_KEY: ${{ secrets.BIGBALLS_API_KEY }}
         run: python scripts/sync_upcoming_lineups.py
+        # bigballsdata.com's free-plan daily quota is easy to exhaust (see
+        # backfill-appearances.yml) — a 429 here must not take the rest of
+        # this job down with it. Without this, one rate-limited request
+        # aborted every step after it, including "Commit and push" — so any
+        # matches close_out_finished_matches.py (the step above) already
+        # found finished were written to this runner's local checkout and
+        # then discarded when the job died, never reaching the live site.
+        continue-on-error: true
 
       - name: Sync Champions League / Europa League lineups
         env:
           HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
         run: python scripts/sync_highlightly_lineups.py
+        continue-on-error: true
 
       - name: Re-predict matches whose lineup just landed
         run: python scripts/resharpen_predictions.py
