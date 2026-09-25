@@ -7,9 +7,14 @@ name: Historical appearance backfill
 # season"). Building block for model/player_elo.py.
 #
 # Budget-shared with daily-refresh.yml, which also calls bigballsdata.com
-# (current-season lineups/stats) every day against the same 2000/day cap.
-# --budget 1500 here deliberately leaves real headroom for that step rather
-# than assuming this job gets the whole daily allowance.
+# (current-season lineups/stats) every day, and with close-out-finished.yml,
+# whose lineup sync runs every 15 minutes 11:00-23:00 — all against the same
+# 2000/day cap. --budget 1000 here leaves real headroom for both. 1500 did
+# not: on 2026-09-19 this job hit HTTP 429 after 6 requests, because the
+# previous run's 1500 plus that day's lineup syncs were still inside the
+# provider's quota window. A 429 or a refused date now stops or skips
+# cleanly with a warning (see scripts/backfill_appearances.py) instead of
+# failing the run.
 #
 # State (data/appearances.sqlite: which dates are already done, and every
 # appearance collected so far) is deliberately NOT committed to git — see
@@ -36,7 +41,7 @@ on:
     inputs:
       budget:
         description: "Max bigballsdata.com requests to spend this run"
-        default: "1500"
+        default: "1000"
 
 permissions:
   contents: write
@@ -65,7 +70,7 @@ jobs:
       - name: Run backfill
         env:
           BIGBALLS_API_KEY: ${{ secrets.BIGBALLS_API_KEY }}
-        run: python scripts/backfill_appearances.py --budget "${{ github.event.inputs.budget || '1500' }}" --seasons-back 8
+        run: python scripts/backfill_appearances.py --budget "${{ github.event.inputs.budget || '1000' }}" --seasons-back 8
 
       - name: Save appearance backfill progress
         if: always()
