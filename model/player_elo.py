@@ -63,11 +63,20 @@ K_BASE = 20.0
 SHRINKAGE_APPEARANCES_THRESHOLD = 10
 
 # A "confirmed lineup" for team-strength purposes needs at least this many
-# resolved starters — not a strict 11, to tolerate the occasional data quirk
-# (one unresolved name, a keeper substitution mid-warm-up) without silently
-# degrading to a near-empty, unrepresentative XI. Below this, live_team_strength
-# returns None so the caller falls back to team-level Elo rather than trusting
-# a partial lineup.
+# RATED starters — resolved to a real Player AND with at least one
+# appearance behind their rating. Not a strict 11, to tolerate the
+# occasional data quirk (one unresolved name, a debutant) without silently
+# degrading to a near-empty, unrepresentative XI. Below this,
+# live_team_strength returns None so the caller falls back to team-level
+# Elo rather than trusting a partial lineup.
+#
+# "Rated", not just "resolved", matters: an unrated player counts as exactly
+# BASE_RATING, so a lineup of them reads as a perfectly average side. Until
+# Sept 2026 this only checked resolution, and with no ratings reaching the
+# live Predictor at all every lineup-based prediction put both teams at
+# 1500 — erasing e.g. Manchester United vs Sabah FK's real gap (94% home
+# win on team Elo, 67% "lineup-based"). A league with no appearance history
+# yet (Ligue 1 on bigballsdata.com's free plan) would do the same.
 MIN_STARTERS_FOR_LIVE_STRENGTH = 7
 
 SOURCE_INTERNAL = "internal"
@@ -122,18 +131,37 @@ def live_team_strength(
     None whenever there isn't a trustworthy confirmed lineup for this side:
     no Lineup rows at all (most of a match's life — see
     MIN_STARTERS_FOR_LIVE_STRENGTH), or fewer than that many starters
-    resolved to a real Player. A starter with no resolved player_id is
-    skipped rather than guessed at — see Lineup.player_id's docstring for
-    why that can be null."""
-    starters = (
-        session.query(Lineup.player_id)
+    resolved to a real Player with a real rating. A starter with no
+    resolved player_id is skipped rather than guessed at — see
+    Lineup.player_id's docstring for why that can be null."""
+    starters = resolved_starter_ids(session, match_id, team_id)
+    if rated_count(starters, appearance_counts) < MIN_STARTERS_FOR_LIVE_STRENGTH:
+        return None
+    # Every resolved starter still counts (an unrated debutant is a real
+    # BASE_RATING-ish contributor, via player_strength's shrinkage); the
+    # rated-count bar above only decides whether the XI as a whole is
+    # known well enough to trust over team Elo.
+    return team_strength([(player_id, 1.0) for player_id in starters], ratings, appearance_counts)
+
+
+def resolved_starter_ids(session: Session, match_id: int, team_id: int) -> list[int]:
+    """Player ids of this side's confirmed starters that resolved to a real
+    Player — the only ones that could ever carry a rating."""
+    return [
+        player_id
+        for (player_id,) in session.query(Lineup.player_id)
         .filter_by(match_id=match_id, team_id=team_id, starter=True)
         .filter(Lineup.player_id.isnot(None))
         .all()
-    )
-    if len(starters) < MIN_STARTERS_FOR_LIVE_STRENGTH:
-        return None
-    return team_strength([(player_id, 1.0) for (player_id,) in starters], ratings, appearance_counts)
+    ]
+
+
+def rated_count(player_ids: list[int], appearance_counts: dict[int, int]) -> int:
+    """How many of `player_ids` have any appearance history behind their
+    rating — compared against MIN_STARTERS_FOR_LIVE_STRENGTH by both
+    live_team_strength and scripts/resharpen_predictions.py, so the two can
+    never disagree about whether a lineup is usable."""
+    return sum(1 for player_id in player_ids if appearance_counts.get(player_id, 0) > 0)
 
 
 def _load_appearances_by_match(conn: sqlite3.Connection, match_ids: set[int]) -> dict[int, list[tuple[int, int, int]]]:

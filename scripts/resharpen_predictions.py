@@ -29,8 +29,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import SessionLocal, init_db
-from app.models import Lineup, Match, ModelRun, Prediction
-from model.player_elo import MIN_STARTERS_FOR_LIVE_STRENGTH
+from app.models import Match, ModelRun, Prediction
+from model.player_elo import (
+    MIN_STARTERS_FOR_LIVE_STRENGTH,
+    load_persisted_player_ratings,
+    rated_count,
+    resolved_starter_ids,
+)
 from model.predict import Predictor
 
 # Generous next to lineups' own ~1h-before-kickoff publish point (same
@@ -40,18 +45,10 @@ from model.predict import Predictor
 CANDIDATE_WINDOW_HOURS = 2.0
 
 
-def _confirmed_starter_count(session, match_id: int, team_id: int) -> int:
-    return (
-        session.query(Lineup)
-        .filter_by(match_id=match_id, team_id=team_id, starter=True)
-        .filter(Lineup.player_id.isnot(None))
-        .count()
-    )
-
-
 def find_candidates(session) -> tuple[ModelRun | None, list[Match]]:
     """Scheduled matches, kicking off soon, whose CURRENT prediction hasn't
-    used a lineup yet but now has a confirmed one on file for both sides.
+    used a lineup yet but now has a confirmed, rated one on file for both
+    sides.
     Pure reads — no session.commit() anywhere in this function, so calling
     it costs nothing even when (as on most 15-minute ticks) it finds
     nothing."""
@@ -64,13 +61,20 @@ def find_candidates(session) -> tuple[ModelRun | None, list[Match]]:
         session.query(Match).filter(Match.status == "scheduled", Match.utc_kickoff <= window_end).all()
     )
 
+    # The same rated-starter bar Predictor applies (player_elo.
+    # live_team_strength): a lineup of unrated players would re-predict as
+    # lineup_based=False, stay a candidate, and rebuild a full Predictor on
+    # every 15-minute tick for nothing.
+    appearance_counts: dict[int, int] | None = None
     candidates = []
     for match in scheduled:
         prediction = session.query(Prediction).filter_by(match_id=match.id, model_run_id=model_run.id).one_or_none()
         if prediction is None or prediction.lineup_based:
             continue
-        home_n = _confirmed_starter_count(session, match.id, match.home_team_id)
-        away_n = _confirmed_starter_count(session, match.id, match.away_team_id)
+        if appearance_counts is None:
+            _, appearance_counts = load_persisted_player_ratings(session)
+        home_n = rated_count(resolved_starter_ids(session, match.id, match.home_team_id), appearance_counts)
+        away_n = rated_count(resolved_starter_ids(session, match.id, match.away_team_id), appearance_counts)
         if home_n >= MIN_STARTERS_FOR_LIVE_STRENGTH and away_n >= MIN_STARTERS_FOR_LIVE_STRENGTH:
             candidates.append(match)
     return model_run, candidates

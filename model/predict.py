@@ -147,13 +147,21 @@ class Predictor:
         self.use_lineup_strength = use_lineup_strength
         self.elo_ratings = elo.compute_ratings(session, as_of=as_of, exclude_match_id=exclude_match_id)
         self.overall_match_counts = elo.match_count_by_team(session, as_of=as_of)
-        # Same as_of/exclude_match_id discipline as team Elo above — a fresh
-        # replay per Predictor, not a persisted-snapshot read, so backtesting
-        # at an arbitrary historical cutoff stays lookahead-free (see
-        # model/player_elo.py's own no-lookahead test).
-        self.player_ratings, self.player_appearance_counts = player_elo.compute_player_ratings(
-            session, as_of=as_of, exclude_match_id=exclude_match_id
-        )
+        # A historical cutoff (backtests) needs a fresh replay, same as_of/
+        # exclude_match_id discipline as team Elo above, so it stays
+        # lookahead-free (see model/player_elo.py's own no-lookahead test).
+        # A live prediction reads the persisted snapshot instead: the replay's
+        # input, data/appearances.sqlite, only exists inside
+        # backfill-appearances.yml (restored from its own actions/cache), so
+        # in daily-refresh.yml and close-out-finished.yml — the two jobs that
+        # actually write live predictions — a replay silently came back empty
+        # and every confirmed lineup read as a team of BASE_RATING players.
+        if as_of is None and exclude_match_id is None:
+            self.player_ratings, self.player_appearance_counts = player_elo.load_persisted_player_ratings(session)
+        else:
+            self.player_ratings, self.player_appearance_counts = player_elo.compute_player_ratings(
+                session, as_of=as_of, exclude_match_id=exclude_match_id
+            )
         # Set by _team_strength_for on every lambdas_for call, read
         # immediately after by predict_match — see that method's docstring
         # for why this rides as instance state instead of extending

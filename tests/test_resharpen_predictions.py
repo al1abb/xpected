@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Competition, Lineup, Match, ModelRun, Prediction, Team
 from model import elo
-from model.player_elo import MIN_STARTERS_FOR_LIVE_STRENGTH
+from model.player_elo import MIN_STARTERS_FOR_LIVE_STRENGTH, persist_player_ratings
 from scripts.resharpen_predictions import find_candidates, resharpen
 
 
@@ -37,7 +37,7 @@ def _isolated_appearances_db(monkeypatch, tmp_path):
     monkeypatch.setattr(player_elo, "_connect", lambda: connect_appearances(tmp_path / "appearances.sqlite"))
 
 
-def _setup_match(session, *, lineup_based=False, starters_home=0, starters_away=0):
+def _setup_match(session, *, lineup_based=False, starters_home=0, starters_away=0, rated=True):
     comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
     session.add(comp)
     session.flush()
@@ -64,6 +64,12 @@ def _setup_match(session, *, lineup_based=False, starters_home=0, starters_away=
     for i in range(starters_away):
         session.add(Lineup(match_id=match.id, team_id=away.id, player_name=f"A{i}", starter=True, player_id=100 + i))
     session.commit()
+    if rated:
+        # The persisted snapshot a live Predictor (and find_candidates) reads:
+        # home's starters stronger than away's.
+        ratings = {i + 1: 1700.0 for i in range(starters_home)}
+        ratings.update({100 + i: 1400.0 for i in range(starters_away)})
+        persist_player_ratings(session, ratings, {pid: 20 for pid in ratings})
     return match, model_run
 
 
@@ -91,6 +97,14 @@ def test_find_candidates_includes_match_with_confirmed_lineup_not_yet_sharpened(
     assert [m.id for m in candidates] == [match.id]
 
 
+def test_find_candidates_skips_lineup_of_unrated_players(session):
+    """Predictor would re-predict it as lineup_based=False, leaving it a
+    candidate forever and rebuilding a full Predictor every 15 minutes."""
+    _setup_match(session, lineup_based=False, starters_home=11, starters_away=11, rated=False)
+    _, candidates = find_candidates(session)
+    assert candidates == []
+
+
 def test_resharpen_updates_existing_prediction_in_place_without_new_model_run(session):
     match, model_run = _setup_match(session, lineup_based=False, starters_home=11, starters_away=11)
     before_count = session.query(Prediction).count()
@@ -106,3 +120,6 @@ def test_resharpen_updates_existing_prediction_in_place_without_new_model_run(se
 
     prediction = session.query(Prediction).filter_by(match_id=match.id, model_run_id=model_run.id).one()
     assert prediction.lineup_based is True
+    # Built from the persisted ratings (no appearances.sqlite in this test,
+    # as in CI): the stronger-rated home XI must actually show up.
+    assert prediction.home_win_prob > prediction.away_win_prob

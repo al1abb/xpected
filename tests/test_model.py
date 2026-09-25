@@ -496,7 +496,7 @@ def test_predictor_falls_back_when_lineup_partial(session):
     assert summary["lineup_based"] is False
 
 
-def test_predictor_use_lineup_strength_false_ignores_a_confirmed_lineup(session):
+def test_predictor_use_lineup_strength_false_ignores_a_confirmed_lineup(session, monkeypatch):
     """The Phase 5 A/B toggle (scripts/backtest_lineup_impact.py): even a
     fully-confirmed, well-resolved lineup must not influence the prediction
     when use_lineup_strength=False -- otherwise the "without lineup
@@ -516,6 +516,13 @@ def test_predictor_use_lineup_strength_false_ignores_a_confirmed_lineup(session)
         session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
     session.commit()
 
+    rated = {pid: 1500.0 for pid in [*range(1, 12), *range(101, 112)]}
+    monkeypatch.setattr(
+        predict.player_elo,
+        "compute_player_ratings",
+        lambda session, **kw: (rated, {pid: 20 for pid in rated}),
+    )
+
     predictor_off = predict.Predictor(session, as_of=fixture.utc_kickoff, use_lineup_strength=False)
     summary_off = predictor_off.predict_match(fixture)
     assert summary_off["lineup_based"] is False
@@ -523,6 +530,37 @@ def test_predictor_use_lineup_strength_false_ignores_a_confirmed_lineup(session)
     predictor_on = predict.Predictor(session, as_of=fixture.utc_kickoff, use_lineup_strength=True)
     summary_on = predictor_on.predict_match(fixture)
     assert summary_on["lineup_based"] is True
+
+
+def test_live_predictor_uses_persisted_player_ratings(session):
+    """A live Predictor (no as_of) must read the persisted PlayerRating
+    snapshot, not replay data/appearances.sqlite — that file only exists
+    inside backfill-appearances.yml, so in the jobs that write live
+    predictions a replay came back empty and both XIs read as BASE_RATING.
+    The isolated appearances file here is empty, exactly as in CI."""
+    comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    session.add(comp)
+    session.flush()
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    fixture = Match(competition_id=comp.id, utc_kickoff=dt.datetime.utcnow() + dt.timedelta(hours=1), status="scheduled", home_team_id=home.id, away_team_id=away.id, source="test")
+    session.add(fixture)
+    session.flush()
+    for pid in range(1, 12):
+        session.add(Lineup(match_id=fixture.id, team_id=home.id, player_name=f"H{pid}", starter=True, player_id=pid))
+    for pid in range(101, 112):
+        session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
+    session.commit()
+    ratings = {pid: 1800.0 for pid in range(1, 12)}
+    ratings.update({pid: 1300.0 for pid in range(101, 112)})
+    player_elo.persist_player_ratings(session, ratings, {pid: 20 for pid in ratings})
+
+    predictor = predict.Predictor(session)
+    home_strength, away_strength, lineup_based = predictor._team_strength_for(fixture)
+
+    assert lineup_based is True
+    assert home_strength > away_strength
 
 
 def test_generate_predictions_persists_lineup_based_flag(session):
