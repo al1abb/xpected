@@ -19,6 +19,33 @@ DEFAULT_MAX_AGE_HOURS = 12
 RETRY_STATUSES = {429, 502, 503, 504}
 MAX_RETRIES = 4
 
+# How much of an error response's body to carry into the exception message —
+# enough for an API's JSON error ({"error": "history_not_included", ...}),
+# not enough to flood a CI log with an HTML error page.
+_ERROR_BODY_CHARS = 500
+
+
+class FetchError(RuntimeError):
+    """A non-200 response, with the status and the server's own explanation
+    attached. Subclasses RuntimeError so every existing `except RuntimeError`
+    caller keeps working; callers that need to tell a quota 429 apart from a
+    permanent 403 can read `status_code` instead of parsing the message."""
+
+    def __init__(self, url: str, status_code: int, body: str, *, attempts: int = 1):
+        self.url = url
+        self.status_code = status_code
+        self.body = body
+        detail = f": {body}" if body else ""
+        prefix = f"Failed to fetch {url} after {attempts} attempts: " if attempts > 1 else ""
+        super().__init__(f"{prefix}{url} -> HTTP {status_code}{detail}")
+
+
+def _error_body(resp: httpx.Response) -> str:
+    try:
+        return " ".join(resp.text.split())[:_ERROR_BODY_CHARS]
+    except Exception:
+        return ""
+
 
 def _cache_path(url: str, subdir: str) -> Path:
     digest = hashlib.sha256(url.encode()).hexdigest()[:16]
@@ -59,7 +86,7 @@ def fetch_text(
             continue
 
         if resp.status_code in RETRY_STATUSES:
-            last_error = RuntimeError(f"{url} -> HTTP {resp.status_code}")
+            last_error = FetchError(url, resp.status_code, _error_body(resp))
             time.sleep(2**attempt * 2)
             continue
 
@@ -67,7 +94,7 @@ def fetch_text(
             if path.exists():
                 # Serve stale cache rather than fail the whole ingest run over one bad fetch.
                 return path.read_text(encoding="utf-8-sig")
-            raise RuntimeError(f"{url} -> HTTP {resp.status_code}")
+            raise FetchError(url, resp.status_code, _error_body(resp))
 
         resp.encoding = "utf-8-sig"
         text = resp.text
@@ -76,6 +103,8 @@ def fetch_text(
 
     if path.exists():
         return path.read_text(encoding="utf-8-sig")
+    if isinstance(last_error, FetchError):
+        raise FetchError(url, last_error.status_code, last_error.body, attempts=MAX_RETRIES)
     raise RuntimeError(f"Failed to fetch {url} after {MAX_RETRIES} attempts: {last_error}")
 
 

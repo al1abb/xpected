@@ -51,6 +51,7 @@ from ingest.bigballs import (
     _RATING_KEYS,
     _resolve_match,
 )
+from ingest.cache import FetchError
 from ingest.resolve import build_alias_pool
 from ingest.resolve_players import resolve_or_create_player
 
@@ -61,6 +62,22 @@ APPEARANCES_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "appeara
 # restarted run from re-fetching anything it already has on disk, let alone
 # already recorded in backfilled_dates.
 _PERMANENT_MAX_AGE_HOURS = 24 * 365 * 10
+
+# A date the API refuses (403/404 — e.g. the free plan's history wall) is
+# retried on this many separate runs before it's given up on, so one
+# transient refusal never loses a date but a permanent one never pins the
+# backfill in place forever (which is what happened to bundesliga in
+# Sept 2026: the same date 403'd every day and failed every run).
+MAX_REFUSALS_PER_DATE = 3
+
+# Within one run, stop asking about a league after this many dates in a row
+# are refused — a wall that covers a whole range of seasons would otherwise
+# spend one request per remaining date, every run, learning nothing new.
+MAX_CONSECUTIVE_REFUSALS_PER_RUN = 3
+
+# 429 = the shared 2000/day quota is spent (see backfill-appearances.yml).
+# Nothing else this run could succeed, so stop rather than fail.
+_RATE_LIMITED_STATUS = 429
 
 
 def _connect(path: Path = APPEARANCES_DB_PATH) -> sqlite3.Connection:
@@ -83,7 +100,35 @@ def _connect(path: Path = APPEARANCES_DB_PATH) -> sqlite3.Connection:
             PRIMARY KEY (league_key, date)
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS refused_dates (
+            league_key TEXT NOT NULL,
+            date TEXT NOT NULL,
+            refusals INTEGER NOT NULL,
+            last_status INTEGER NOT NULL,
+            last_error TEXT,
+            PRIMARY KEY (league_key, date)
+        )"""
+    )
     return conn
+
+
+def _refusals(conn: sqlite3.Connection, league_key: str, date: str) -> int:
+    row = conn.execute(
+        "SELECT refusals FROM refused_dates WHERE league_key = ? AND date = ?", (league_key, date)
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _record_refusal(conn: sqlite3.Connection, league_key: str, date: str, exc: FetchError) -> None:
+    conn.execute(
+        """INSERT INTO refused_dates (league_key, date, refusals, last_status, last_error)
+           VALUES (?, ?, 1, ?, ?)
+           ON CONFLICT (league_key, date) DO UPDATE SET
+             refusals = refusals + 1, last_status = excluded.last_status, last_error = excluded.last_error""",
+        (league_key, date, exc.status_code, str(exc)),
+    )
+    conn.commit()
 
 
 def _already_backfilled(conn: sqlite3.Connection, league_key: str, date: str) -> bool:
@@ -158,7 +203,7 @@ def backfill_competition(
     dates: list[str],
     *,
     max_requests: int | None = None,
-) -> dict[str, int | str | bool]:
+) -> dict:
     """`dates`: 'YYYY-MM-DD' strings, from the caller's own query against this
     app's `matches` table for when this league actually played — never
     enumerated blindly, so a date with nothing scheduled never costs a
@@ -172,6 +217,12 @@ def backfill_competition(
     been fully processed, so stopping mid-date is always safe to resume:
     the next run re-lists that same date (one extra request) and picks up
     where this one left off, never double-counting or skipping a match.
+
+    API refusals never raise out of here. A 429 (the shared daily quota)
+    stops this league with `rate_limited` set, so the caller can stop the
+    rest too. A 403/404 is logged to `refused_dates` and that date skipped;
+    after MAX_REFUSALS_PER_DATE separate runs it's given up on. Each
+    refusal's message, with the API's own explanation, lands in `errors`.
     """
     league_key = LEAGUE_CODES.get(competition_slug)
     if league_key is None:
@@ -181,42 +232,63 @@ def backfill_competition(
     pool = build_alias_pool(session, exclude_source="bigballs")
 
     matched = appearances_written = dates_skipped = requests_spent = 0
-    budget_exhausted = False
+    dates_refused = dates_given_up = consecutive_refusals = 0
+    budget_exhausted = rate_limited = False
+    errors: list[str] = []
     for date in dates:
         if _already_backfilled(conn, league_key, date):
             dates_skipped += 1
             continue
+        if _refusals(conn, league_key, date) >= MAX_REFUSALS_PER_DATE:
+            dates_given_up += 1
+            continue
         if max_requests is not None and requests_spent >= max_requests:
             budget_exhausted = True
             break
+        if consecutive_refusals >= MAX_CONSECUTIVE_REFUSALS_PER_RUN:
+            errors.append(f"stopped after {consecutive_refusals} refused dates in a row")
+            break
 
-        data = _paced_fetch_json(
-            "v1/matches",
-            params={"sport": "football", "league": league_key, "date": date},
-            max_age_hours=_PERMANENT_MAX_AGE_HOURS,
-        )
-        requests_spent += 1
-
-        rows = data.get("data", [])
-        date_fully_processed = True
-        for row in rows:
-            if max_requests is not None and requests_spent >= max_requests:
-                date_fully_processed = False
-                budget_exhausted = True
-                break
-            match = _resolve_match(session, competition, row, pool)
-            if match is None:
-                continue
-            matched += 1
-            already = conn.execute(
-                "SELECT 1 FROM appearances WHERE match_id = ? LIMIT 1", (match.id,)
-            ).fetchone()
-            if already is None:
-                requests_spent += 1  # /stats call inside _backfill_match_appearances
-            appearances_written += _backfill_match_appearances(
-                session, conn, match, row["id"], row["home"]["name"], row["away"]["name"]
+        try:
+            requests_spent += 1
+            data = _paced_fetch_json(
+                "v1/matches",
+                params={"sport": "football", "league": league_key, "date": date},
+                max_age_hours=_PERMANENT_MAX_AGE_HOURS,
             )
 
+            rows = data.get("data", [])
+            date_fully_processed = True
+            for row in rows:
+                if max_requests is not None and requests_spent >= max_requests:
+                    date_fully_processed = False
+                    budget_exhausted = True
+                    break
+                match = _resolve_match(session, competition, row, pool)
+                if match is None:
+                    continue
+                matched += 1
+                already = conn.execute(
+                    "SELECT 1 FROM appearances WHERE match_id = ? LIMIT 1", (match.id,)
+                ).fetchone()
+                if already is None:
+                    requests_spent += 1  # /stats call inside _backfill_match_appearances
+                appearances_written += _backfill_match_appearances(
+                    session, conn, match, row["id"], row["home"]["name"], row["away"]["name"]
+                )
+        except FetchError as exc:
+            # Either way the date stays unmarked, so whatever of it was
+            # already written is kept and the rest is picked up next time.
+            errors.append(f"{date}: {exc}")
+            if exc.status_code == _RATE_LIMITED_STATUS:
+                rate_limited = True
+                break
+            _record_refusal(conn, league_key, date, exc)
+            dates_refused += 1
+            consecutive_refusals += 1
+            continue
+
+        consecutive_refusals = 0
         if date_fully_processed:
             _mark_backfilled(conn, league_key, date)
         if budget_exhausted:
@@ -226,6 +298,10 @@ def backfill_competition(
         "matched": matched,
         "appearances_written": appearances_written,
         "dates_skipped_already_done": dates_skipped,
+        "dates_refused": dates_refused,
+        "dates_given_up": dates_given_up,
         "requests_spent": requests_spent,
         "budget_exhausted": budget_exhausted,
+        "rate_limited": rate_limited,
+        "errors": errors,
     }
