@@ -19,6 +19,11 @@ from model.player_elo import (
     _replay_player_elo,
     compute_ear,
     live_team_strength,
+    lineup_adjusted_strength,
+    elo_per_xi_point,
+    DEFAULT_ELO_PER_XI_POINT,
+    MAX_ELO_PER_XI_POINT,
+    MAX_LINEUP_ADJUSTMENT,
     load_persisted_player_ratings,
     persist_player_ratings,
     player_strength,
@@ -295,14 +300,33 @@ def test_live_team_strength_none_below_min_starters(session):
     assert live_team_strength(session, match.id, home.id, ratings={}, appearance_counts={}) is None
 
 
-def test_live_team_strength_computed_at_min_starters(session):
+def test_live_team_strength_computed_at_min_rated_starters(session):
     home, away = _team(session, "Home"), _team(session, "Away")
     match = _match(session, home, away, home_goals=0, away_goals=0, kickoff=dt.datetime(2026, 1, 1))
     for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH):
         _lineup_row(session, match.id, home.id, player_id=i + 1)
+    ratings = {i + 1: 1600.0 for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH)}
+    counts = {pid: SHRINKAGE_APPEARANCES_THRESHOLD for pid in ratings}
 
-    strength = live_team_strength(session, match.id, home.id, ratings={}, appearance_counts={})
-    assert strength == pytest.approx(BASE_RATING)  # no ratings on file yet -> every starter defaults to BASE_RATING
+    strength = live_team_strength(session, match.id, home.id, ratings=ratings, appearance_counts=counts)
+    assert strength == pytest.approx(1600.0)
+
+
+def test_live_team_strength_none_when_starters_are_unrated(session):
+    """A full, fully-resolved XI with no rating history is not a lineup
+    signal — it would read as a perfectly average side and erase the real
+    gap team Elo sees (the Sept 2026 bug: every lineup-based prediction put
+    both teams at exactly BASE_RATING)."""
+    home, away = _team(session, "Home"), _team(session, "Away")
+    match = _match(session, home, away, home_goals=0, away_goals=0, kickoff=dt.datetime(2026, 1, 1))
+    for i in range(11):
+        _lineup_row(session, match.id, home.id, player_id=i + 1)
+    # One short of the bar: only MIN-1 starters have any appearances.
+    counts = {i + 1: 5 for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH - 1)}
+    ratings = {pid: 1700.0 for pid in counts}
+
+    assert live_team_strength(session, match.id, home.id, ratings={}, appearance_counts={}) is None
+    assert live_team_strength(session, match.id, home.id, ratings=ratings, appearance_counts=counts) is None
 
 
 def test_live_team_strength_ignores_bench_and_unresolved_names(session):
@@ -314,8 +338,10 @@ def test_live_team_strength_ignores_bench_and_unresolved_names(session):
     session.add(Lineup(match_id=match.id, team_id=home.id, player_name="Unresolved", starter=True, player_id=None))
     session.flush()
 
-    ratings = {1: 1700.0}
-    strength = live_team_strength(session, match.id, home.id, ratings=ratings, appearance_counts={1: SHRINKAGE_APPEARANCES_THRESHOLD})
+    ratings = {i + 1: BASE_RATING for i in range(MIN_STARTERS_FOR_LIVE_STRENGTH)}
+    ratings[1] = 1700.0
+    counts = {pid: SHRINKAGE_APPEARANCES_THRESHOLD for pid in ratings}
+    strength = live_team_strength(session, match.id, home.id, ratings=ratings, appearance_counts=counts)
     # Only the MIN_STARTERS_FOR_LIVE_STRENGTH resolved starters count -> player
     # 1's 1700 pulls the mean above BASE_RATING, proving bench/unresolved rows
     # were excluded rather than silently dragging it back toward BASE_RATING.
@@ -428,3 +454,40 @@ def test_compute_ear_omits_players_missing_position_or_competition():
     assert set(ear) == {1}
     assert 2 not in ear
     assert 3 not in ear
+
+
+# ---------- lineup adjustment on the team-Elo scale ----------
+
+
+def test_lineup_adjusted_strength_moves_team_elo_by_xi_gap():
+    assert lineup_adjusted_strength(1800.0, 1520.0, 1500.0, 2.0) == pytest.approx(1840.0)
+    assert lineup_adjusted_strength(1800.0, 1480.0, 1500.0, 2.0) == pytest.approx(1760.0)
+    assert lineup_adjusted_strength(1800.0, 1500.0, 1500.0, 2.0) == pytest.approx(1800.0)
+
+
+def test_lineup_adjusted_strength_is_capped():
+    assert lineup_adjusted_strength(1800.0, 1000.0, 1500.0, 3.0) == pytest.approx(1800.0 - MAX_LINEUP_ADJUSTMENT)
+    assert lineup_adjusted_strength(1800.0, 2000.0, 1500.0, 3.0) == pytest.approx(1800.0 + MAX_LINEUP_ADJUSTMENT)
+
+
+def test_elo_per_xi_point_fits_within_league_slope():
+    """Two leagues whose player Elo sits at different levels (no cross-
+    league anchor) but share the same within-league relationship: team Elo
+    rises 2 points per XI point. The fit must recover 2, not be thrown by
+    the offset between leagues."""
+    typical, league_of, elos = {}, {}, {}
+    for league, xi_offset, elo_offset in ((1, 0.0, 0.0), (2, 200.0, -300.0)):
+        for k in range(8):
+            team_id = league * 100 + k
+            typical[team_id] = 1450.0 + xi_offset + 10.0 * k
+            elos[team_id] = 1500.0 + elo_offset + 20.0 * k
+            league_of[team_id] = league
+    assert elo_per_xi_point(typical, league_of, elos) == pytest.approx(2.0)
+
+
+def test_elo_per_xi_point_defaults_and_clamps():
+    assert elo_per_xi_point({}, {}, {}) == DEFAULT_ELO_PER_XI_POINT
+    typical = {k: 1500.0 + k for k in range(12)}
+    league_of = {k: 1 for k in range(12)}
+    steep = {k: 1500.0 + 50.0 * k for k in range(12)}
+    assert elo_per_xi_point(typical, league_of, steep) == MAX_ELO_PER_XI_POINT

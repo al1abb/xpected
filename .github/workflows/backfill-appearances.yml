@@ -16,6 +16,16 @@ name: Historical appearance backfill
 # cleanly with a warning (see scripts/backfill_appearances.py) instead of
 # failing the run.
 #
+# --seasons-back 1 (current season only) since 2026-09-25: the free plan now
+# answers any earlier date with HTTP 403 history_not_included ("Your plan
+# covers the current season only"). Dates are walked oldest first, so
+# reaching back further only parks each league behind a wall of refused
+# dates — Bundesliga (stopped at 2025-02) and Ligue 1 (never started) could
+# not reach this season's matches at all. Everything already collected from
+# earlier seasons stays in the cache and in the replay. Raise it via the
+# manual run's seasons_back input after a plan upgrade (Solo: 4 prior
+# seasons).
+#
 # State (data/appearances.sqlite: which dates are already done, and every
 # appearance collected so far) is deliberately NOT committed to git — see
 # that module's docstring for the size reasoning — so it has to survive
@@ -42,6 +52,9 @@ on:
       budget:
         description: "Max bigballsdata.com requests to spend this run"
         default: "1000"
+      seasons_back:
+        description: "How many seasons of dates to backfill (1 = current season only)"
+        default: "1"
 
 permissions:
   contents: write
@@ -70,7 +83,7 @@ jobs:
       - name: Run backfill
         env:
           BIGBALLS_API_KEY: ${{ secrets.BIGBALLS_API_KEY }}
-        run: python scripts/backfill_appearances.py --budget "${{ github.event.inputs.budget || '1000' }}" --seasons-back 8
+        run: python scripts/backfill_appearances.py --budget "${{ github.event.inputs.budget || '1000' }}" --seasons-back "${{ github.event.inputs.seasons_back || '1' }}"
 
       - name: Save appearance backfill progress
         if: always()

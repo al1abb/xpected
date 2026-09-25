@@ -147,13 +147,26 @@ class Predictor:
         self.use_lineup_strength = use_lineup_strength
         self.elo_ratings = elo.compute_ratings(session, as_of=as_of, exclude_match_id=exclude_match_id)
         self.overall_match_counts = elo.match_count_by_team(session, as_of=as_of)
-        # Same as_of/exclude_match_id discipline as team Elo above — a fresh
-        # replay per Predictor, not a persisted-snapshot read, so backtesting
-        # at an arbitrary historical cutoff stays lookahead-free (see
-        # model/player_elo.py's own no-lookahead test).
-        self.player_ratings, self.player_appearance_counts = player_elo.compute_player_ratings(
-            session, as_of=as_of, exclude_match_id=exclude_match_id
-        )
+        # A historical cutoff (backtests) needs a fresh replay, same as_of/
+        # exclude_match_id discipline as team Elo above, so it stays
+        # lookahead-free (see model/player_elo.py's own no-lookahead test).
+        # A live prediction reads the persisted snapshot instead: the replay's
+        # input, data/appearances.sqlite, only exists inside
+        # backfill-appearances.yml (restored from its own actions/cache), so
+        # in daily-refresh.yml and close-out-finished.yml — the two jobs that
+        # actually write live predictions — a replay silently came back empty
+        # and every confirmed lineup read as a team of BASE_RATING players.
+        if as_of is None and exclude_match_id is None:
+            self.player_ratings, self.player_appearance_counts = player_elo.load_persisted_player_ratings(session)
+        else:
+            self.player_ratings, self.player_appearance_counts = player_elo.compute_player_ratings(
+                session, as_of=as_of, exclude_match_id=exclude_match_id
+            )
+        self.exclude_match_id = exclude_match_id
+        # (typical XI strength per team, league per team, Elo points per XI
+        # point) — built on first use by _lineup_baselines(), since most
+        # predictions (no confirmed lineup yet) never need it.
+        self._lineup_baseline_cache: tuple[dict[int, float], dict[int, int], float] | None = None
         # Set by _team_strength_for on every lambdas_for call, read
         # immediately after by predict_match — see that method's docstring
         # for why this rides as instance state instead of extending
@@ -345,16 +358,30 @@ class Predictor:
         rhos = [f.rho for f in self.dc_fits.values()]
         return float(np.mean(rhos)) if rhos else 0.0
 
+    def _lineup_baselines(self) -> tuple[dict[int, float], dict[int, int], float]:
+        if self._lineup_baseline_cache is None:
+            typical, league_of = player_elo.typical_xi_strengths(
+                self.session,
+                self.player_ratings,
+                self.player_appearance_counts,
+                before=self.as_of,
+                exclude_match_id=self.exclude_match_id,
+            )
+            per_point = player_elo.elo_per_xi_point(typical, league_of, self.elo_ratings)
+            self._lineup_baseline_cache = (typical, league_of, per_point)
+        return self._lineup_baseline_cache
+
     def _team_strength_for(self, match: Match) -> tuple[float, float, bool]:
         """(home_strength, away_strength, lineup_based) — the "how strong is
         each side today" input to the Elo-bridge (self.elo_calib.lambdas).
 
-        Prefers the confirmed starting XI's player-derived strength
-        (model/player_elo.py::live_team_strength) when BOTH sides have one;
-        both sides is deliberate — using a player-derived number for one
-        side and a team-Elo number for the other would compare two
-        different scales, not a stronger vs. weaker read of the same thing.
-        Falls back to team-level Elo otherwise, which is the common case:
+        Always team Elo, ADJUSTED by the confirmed starting XI when both
+        sides have one and both have a usual-XI baseline to compare it
+        against (model/player_elo.py::lineup_adjusted_strength — see the
+        comment block above typical_xi_strengths for why a player-derived
+        strength must never replace team Elo outright). Both sides, so a
+        lineup_based prediction always reflects both teams' actual XIs.
+        Falls back to plain team Elo otherwise, which is the common case:
         lineups publish ~1h before kickoff, so most of a match's life is
         spent here. Never silent — predict_match surfaces which source was
         used as Prediction.lineup_based, and the match page labels it.
@@ -363,20 +390,26 @@ class Predictor:
         Elo fallback regardless of lineup data — the A/B toggle for
         scripts/backtest_lineup_impact.py, never used outside that
         comparison."""
+        home_elo = self.elo_ratings.get(match.home_team_id, elo.BASE_RATING)
+        away_elo = self.elo_ratings.get(match.away_team_id, elo.BASE_RATING)
         if self.use_lineup_strength:
-            home_strength = player_elo.live_team_strength(
+            home_xi = player_elo.live_team_strength(
                 self.session, match.id, match.home_team_id, self.player_ratings, self.player_appearance_counts
             )
-            away_strength = player_elo.live_team_strength(
+            away_xi = player_elo.live_team_strength(
                 self.session, match.id, match.away_team_id, self.player_ratings, self.player_appearance_counts
             )
-            if home_strength is not None and away_strength is not None:
-                return home_strength, away_strength, True
-        return (
-            self.elo_ratings.get(match.home_team_id, elo.BASE_RATING),
-            self.elo_ratings.get(match.away_team_id, elo.BASE_RATING),
-            False,
-        )
+            if home_xi is not None and away_xi is not None:
+                typical, _, per_point = self._lineup_baselines()
+                home_typical = typical.get(match.home_team_id)
+                away_typical = typical.get(match.away_team_id)
+                if home_typical is not None and away_typical is not None:
+                    return (
+                        player_elo.lineup_adjusted_strength(home_elo, home_xi, home_typical, per_point),
+                        player_elo.lineup_adjusted_strength(away_elo, away_xi, away_typical, per_point),
+                        True,
+                    )
+        return home_elo, away_elo, False
 
     def lambdas_for(self, match: Match) -> tuple[float, float, float, float]:
         """Returns (lambda_home, lambda_away, rho, confidence_weight).
