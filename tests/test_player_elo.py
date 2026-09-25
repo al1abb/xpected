@@ -19,6 +19,11 @@ from model.player_elo import (
     _replay_player_elo,
     compute_ear,
     live_team_strength,
+    lineup_adjusted_strength,
+    elo_per_xi_point,
+    DEFAULT_ELO_PER_XI_POINT,
+    MAX_ELO_PER_XI_POINT,
+    MAX_LINEUP_ADJUSTMENT,
     load_persisted_player_ratings,
     persist_player_ratings,
     player_strength,
@@ -449,3 +454,40 @@ def test_compute_ear_omits_players_missing_position_or_competition():
     assert set(ear) == {1}
     assert 2 not in ear
     assert 3 not in ear
+
+
+# ---------- lineup adjustment on the team-Elo scale ----------
+
+
+def test_lineup_adjusted_strength_moves_team_elo_by_xi_gap():
+    assert lineup_adjusted_strength(1800.0, 1520.0, 1500.0, 2.0) == pytest.approx(1840.0)
+    assert lineup_adjusted_strength(1800.0, 1480.0, 1500.0, 2.0) == pytest.approx(1760.0)
+    assert lineup_adjusted_strength(1800.0, 1500.0, 1500.0, 2.0) == pytest.approx(1800.0)
+
+
+def test_lineup_adjusted_strength_is_capped():
+    assert lineup_adjusted_strength(1800.0, 1000.0, 1500.0, 3.0) == pytest.approx(1800.0 - MAX_LINEUP_ADJUSTMENT)
+    assert lineup_adjusted_strength(1800.0, 2000.0, 1500.0, 3.0) == pytest.approx(1800.0 + MAX_LINEUP_ADJUSTMENT)
+
+
+def test_elo_per_xi_point_fits_within_league_slope():
+    """Two leagues whose player Elo sits at different levels (no cross-
+    league anchor) but share the same within-league relationship: team Elo
+    rises 2 points per XI point. The fit must recover 2, not be thrown by
+    the offset between leagues."""
+    typical, league_of, elos = {}, {}, {}
+    for league, xi_offset, elo_offset in ((1, 0.0, 0.0), (2, 200.0, -300.0)):
+        for k in range(8):
+            team_id = league * 100 + k
+            typical[team_id] = 1450.0 + xi_offset + 10.0 * k
+            elos[team_id] = 1500.0 + elo_offset + 20.0 * k
+            league_of[team_id] = league
+    assert elo_per_xi_point(typical, league_of, elos) == pytest.approx(2.0)
+
+
+def test_elo_per_xi_point_defaults_and_clamps():
+    assert elo_per_xi_point({}, {}, {}) == DEFAULT_ELO_PER_XI_POINT
+    typical = {k: 1500.0 + k for k in range(12)}
+    league_of = {k: 1 for k in range(12)}
+    steep = {k: 1500.0 + 50.0 * k for k in range(12)}
+    assert elo_per_xi_point(typical, league_of, steep) == MAX_ELO_PER_XI_POINT

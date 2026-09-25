@@ -49,7 +49,7 @@ import statistics
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Lineup, Match, PlayerRating
+from app.models import Competition, Lineup, Match, PlayerRating
 from ingest.bigballs_history import _connect
 from model.elo import BASE_RATING, _expected_home_score, _goal_diff_multiplier
 
@@ -162,6 +162,141 @@ def rated_count(player_ids: list[int], appearance_counts: dict[int, int]) -> int
     live_team_strength and scripts/resharpen_predictions.py, so the two can
     never disagree about whether a lineup is usable."""
     return sum(1 for player_id in player_ids if appearance_counts.get(player_id, 0) > 0)
+
+
+# ---------- lineup adjustment on the team-Elo scale ----------
+#
+# A lineup's player-derived strength is NOT a team Elo and must never stand
+# in for one. Measured on production data (Sept 2026): the spread of home-
+# minus-away gaps was 103 points player-derived vs 181 on team Elo, and
+# player Elo has no cross-league anchor at all (see the module docstring) —
+# substituting one for the other pulled every lineup-based prediction toward
+# a coin flip. Instead a confirmed XI now ADJUSTS its own team's Elo, by how
+# much stronger or weaker it is than the XIs that same team has actually
+# fielded lately, both rated from the same ratings dict. Comparing a team
+# with itself cancels any league-level offset in player Elo, and an ordinary
+# lineup (the common case) changes nothing: the prediction is exactly the
+# team-Elo one until the XI really is unusual (rotation, injuries, a
+# weakened cup side).
+
+# How many of a team's most recent XIs make up "the XI it usually fields",
+# and how few are too few to call anything usual.
+TYPICAL_XI_MATCHES = 10
+MIN_TYPICAL_XI_MATCHES = 3
+# Lineups older than this don't describe the current squad.
+TYPICAL_XI_LOOKBACK_DAYS = 365
+
+# Team-Elo points per point of XI strength, fitted per Predictor by
+# elo_per_xi_point(). Clamped so a thin or noisy fit can't produce an
+# absurd multiplier; the default stands in when there are too few teams
+# to fit at all.
+DEFAULT_ELO_PER_XI_POINT = 1.0
+MIN_ELO_PER_XI_POINT = 0.5
+MAX_ELO_PER_XI_POINT = 3.0
+MIN_TEAMS_FOR_ELO_PER_XI_POINT = 10
+
+# No single lineup moves a team more than this many Elo points either way —
+# roughly the gap between a title contender and a mid-table side, which is
+# as far as even a heavily rotated XI should reasonably drag a club.
+MAX_LINEUP_ADJUSTMENT = 150.0
+
+
+def typical_xi_strengths(
+    session: Session,
+    ratings: dict[int, float],
+    appearance_counts: dict[int, int],
+    *,
+    before: dt.datetime,
+    exclude_match_id: int | None = None,
+) -> tuple[dict[int, float], dict[int, int]]:
+    """({team_id: mean strength of its recent XIs}, {team_id: its domestic
+    league's competition_id}) — the baseline a confirmed lineup is compared
+    against. Only finished matches strictly before `before` count, so a
+    backtest at a historical cutoff never sees a later lineup. An XI must
+    clear the same rated-starter bar as a live one, and a team needs at
+    least MIN_TYPICAL_XI_MATCHES such XIs, else it has no baseline and its
+    predictions stay on plain team Elo."""
+    league_ids = {cid for (cid,) in session.query(Competition.id).filter(Competition.type == "league")}
+    query = (
+        session.query(Lineup.match_id, Lineup.team_id, Lineup.player_id, Match.utc_kickoff, Match.competition_id)
+        .join(Match, Match.id == Lineup.match_id)
+        .filter(
+            Lineup.starter.is_(True),
+            Lineup.player_id.isnot(None),
+            Match.status == "finished",
+            Match.utc_kickoff < before,
+            Match.utc_kickoff >= before - dt.timedelta(days=TYPICAL_XI_LOOKBACK_DAYS),
+        )
+    )
+    if exclude_match_id is not None:
+        query = query.filter(Lineup.match_id != exclude_match_id)
+
+    xis: dict[tuple[int, int], list[int]] = {}
+    match_info: dict[int, tuple[dt.datetime, int]] = {}
+    for match_id, team_id, player_id, kickoff, competition_id in query:
+        xis.setdefault((team_id, match_id), []).append(player_id)
+        match_info[match_id] = (kickoff, competition_id)
+
+    by_team: dict[int, list[tuple[dt.datetime, int, list[int]]]] = {}
+    for (team_id, match_id), players in xis.items():
+        if rated_count(players, appearance_counts) < MIN_STARTERS_FOR_LIVE_STRENGTH:
+            continue
+        kickoff, competition_id = match_info[match_id]
+        by_team.setdefault(team_id, []).append((kickoff, competition_id, players))
+
+    strengths: dict[int, float] = {}
+    league_of: dict[int, int] = {}
+    for team_id, entries in by_team.items():
+        recent = sorted(entries, key=lambda e: e[0], reverse=True)[:TYPICAL_XI_MATCHES]
+        if len(recent) < MIN_TYPICAL_XI_MATCHES:
+            continue
+        per_match = [team_strength([(pid, 1.0) for pid in players], ratings, appearance_counts) for _, _, players in recent]
+        strengths[team_id] = statistics.fmean(per_match)
+        domestic = [cid for _, cid, _ in recent if cid in league_ids]
+        if domestic:
+            league_of[team_id] = statistics.mode(domestic)
+    return strengths, league_of
+
+
+def elo_per_xi_point(
+    typical: dict[int, float],
+    league_of: dict[int, int],
+    team_elos: dict[int, float],
+) -> float:
+    """How many team-Elo points one point of XI strength is worth: the
+    pooled within-league OLS slope of team Elo on typical-XI strength.
+    Within-league (both sides demeaned per league) because player Elo has
+    no cross-league anchor — a pooled cross-league slope would mostly
+    measure that missing anchor, not squad quality. Falls back to
+    DEFAULT_ELO_PER_XI_POINT with too few teams; always clamped."""
+    by_league: dict[int, list[tuple[float, float]]] = {}
+    for team_id, xi_strength in typical.items():
+        league = league_of.get(team_id)
+        if league is None or team_id not in team_elos:
+            continue
+        by_league.setdefault(league, []).append((xi_strength, team_elos[team_id]))
+
+    sxy = sxx = 0.0
+    n = 0
+    for pairs in by_league.values():
+        if len(pairs) < 2:
+            continue
+        mean_x = statistics.fmean(x for x, _ in pairs)
+        mean_y = statistics.fmean(y for _, y in pairs)
+        for x, y in pairs:
+            sxy += (x - mean_x) * (y - mean_y)
+            sxx += (x - mean_x) ** 2
+        n += len(pairs)
+    if n < MIN_TEAMS_FOR_ELO_PER_XI_POINT or sxx <= 0:
+        return DEFAULT_ELO_PER_XI_POINT
+    return min(MAX_ELO_PER_XI_POINT, max(MIN_ELO_PER_XI_POINT, sxy / sxx))
+
+
+def lineup_adjusted_strength(team_elo: float, xi_strength: float, typical_strength: float, per_point: float) -> float:
+    """`team_elo`, moved by how far today's XI sits from the team's usual one
+    (converted to Elo points, capped at MAX_LINEUP_ADJUSTMENT either way)."""
+    adjustment = per_point * (xi_strength - typical_strength)
+    return team_elo + max(-MAX_LINEUP_ADJUSTMENT, min(MAX_LINEUP_ADJUSTMENT, adjustment))
 
 
 def _load_appearances_by_match(conn: sqlite3.Connection, match_ids: set[int]) -> dict[int, list[tuple[int, int, int]]]:

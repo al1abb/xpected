@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Competition, Lineup, Match, ModelRun, Prediction, Team
 from model import elo
-from model.player_elo import MIN_STARTERS_FOR_LIVE_STRENGTH, persist_player_ratings
+from model.player_elo import MIN_STARTERS_FOR_LIVE_STRENGTH, MIN_TYPICAL_XI_MATCHES, persist_player_ratings
 from scripts.resharpen_predictions import find_candidates, resharpen
 
 
@@ -37,7 +37,21 @@ def _isolated_appearances_db(monkeypatch, tmp_path):
     monkeypatch.setattr(player_elo, "_connect", lambda: connect_appearances(tmp_path / "appearances.sqlite"))
 
 
-def _setup_match(session, *, lineup_based=False, starters_home=0, starters_away=0, rated=True):
+def _usual_xis(session, comp, team, opponent, player_ids, *, before):
+    """Enough finished matches with this XI on file to give `team` a
+    usual-XI baseline (player_elo.MIN_TYPICAL_XI_MATCHES)."""
+    for i in range(MIN_TYPICAL_XI_MATCHES):
+        m = Match(
+            competition_id=comp.id, utc_kickoff=before - dt.timedelta(days=7 * (i + 1)), status="finished",
+            home_team_id=team.id, away_team_id=opponent.id, home_goals=1, away_goals=1, source="test",
+        )
+        session.add(m)
+        session.flush()
+        for pid in player_ids:
+            session.add(Lineup(match_id=m.id, team_id=team.id, player_name=f"P{pid}", starter=True, player_id=pid))
+
+
+def _setup_match(session, *, lineup_based=False, starters_home=0, starters_away=0, rated=True, baseline=True):
     comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
     session.add(comp)
     session.flush()
@@ -63,11 +77,13 @@ def _setup_match(session, *, lineup_based=False, starters_home=0, starters_away=
         session.add(Lineup(match_id=match.id, team_id=home.id, player_name=f"H{i}", starter=True, player_id=i + 1))
     for i in range(starters_away):
         session.add(Lineup(match_id=match.id, team_id=away.id, player_name=f"A{i}", starter=True, player_id=100 + i))
+    if baseline:
+        _usual_xis(session, comp, home, away, [i + 1 for i in range(starters_home)], before=kickoff)
+        _usual_xis(session, comp, away, home, [100 + i for i in range(starters_away)], before=kickoff)
     session.commit()
     if rated:
-        # The persisted snapshot a live Predictor (and find_candidates) reads:
-        # home's starters stronger than away's.
-        ratings = {i + 1: 1700.0 for i in range(starters_home)}
+        # The persisted snapshot a live Predictor (and find_candidates) reads.
+        ratings = {i + 1: 1600.0 for i in range(starters_home)}
         ratings.update({100 + i: 1400.0 for i in range(starters_away)})
         persist_player_ratings(session, ratings, {pid: 20 for pid in ratings})
     return match, model_run
@@ -105,6 +121,14 @@ def test_find_candidates_skips_lineup_of_unrated_players(session):
     assert candidates == []
 
 
+def test_find_candidates_skips_teams_without_a_usual_xi(session):
+    """No baseline to compare the XI against -> Predictor stays on team Elo,
+    so it must not be a candidate either."""
+    _setup_match(session, lineup_based=False, starters_home=11, starters_away=11, baseline=False)
+    _, candidates = find_candidates(session)
+    assert candidates == []
+
+
 def test_resharpen_updates_existing_prediction_in_place_without_new_model_run(session):
     match, model_run = _setup_match(session, lineup_based=False, starters_home=11, starters_away=11)
     before_count = session.query(Prediction).count()
@@ -120,6 +144,3 @@ def test_resharpen_updates_existing_prediction_in_place_without_new_model_run(se
 
     prediction = session.query(Prediction).filter_by(match_id=match.id, model_run_id=model_run.id).one()
     assert prediction.lineup_based is True
-    # Built from the persisted ratings (no appearances.sqlite in this test,
-    # as in CI): the stronger-rated home XI must actually show up.
-    assert prediction.home_win_prob > prediction.away_win_prob

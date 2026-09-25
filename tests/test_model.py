@@ -403,14 +403,28 @@ def test_predictor_confidence_low_for_thin_history(session):
 # ---------- predict.py: lineup-derived team strength (Phase 4) ----------
 
 
-def test_predictor_prefers_lineup_derived_strength_when_confirmed(session, tmp_path):
-    """The core Phase 4 behaviour: two teams that have never played (so
-    team-level Elo alone has them dead even) get a real tilt once a
-    confirmed lineup exists, built from player-Elo history seeded directly
-    into the isolated per-test appearances.sqlite (see
-    _isolated_appearances_db) — home's future starters have racked up heavy
-    wins, away's future starters heavy losses, all well before the fixture
-    itself."""
+def _usual_xis(session, comp, team, opponent, player_ids, *, before):
+    """Enough finished matches with this XI on file to give `team` a
+    usual-XI baseline (player_elo.MIN_TYPICAL_XI_MATCHES), all 1-1 draws so
+    they barely move team Elo."""
+    for i in range(player_elo.MIN_TYPICAL_XI_MATCHES):
+        m = Match(
+            competition_id=comp.id, utc_kickoff=before - dt.timedelta(days=7 * (i + 1)), status="finished",
+            home_team_id=team.id, away_team_id=opponent.id, home_goals=1, away_goals=1, source="test",
+        )
+        session.add(m)
+        session.flush()
+        for pid in player_ids:
+            session.add(Lineup(match_id=m.id, team_id=team.id, player_name=f"P{pid}", starter=True, player_id=pid))
+
+
+def test_predictor_adjusts_team_elo_by_confirmed_xi(session, tmp_path):
+    """The core lineup behaviour: both teams usually field the same average
+    XI (players 900-906, net-even history); today home fields proven
+    winners and away proven losers, from player-Elo history seeded into the
+    isolated per-test appearances.sqlite (see _isolated_appearances_db).
+    The confirmed XIs must tilt the prediction toward home, as an
+    adjustment on top of team Elo."""
     comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
     session.add(comp)
     session.flush()
@@ -453,6 +467,9 @@ def test_predictor_prefers_lineup_derived_strength_when_confirmed(session, tmp_p
         home_team_id=home.id, away_team_id=away.id, source="test",
     )
     session.add(fixture)
+    usual = list(range(900, 907))
+    _usual_xis(session, comp, home, away, usual, before=fixture.utc_kickoff)
+    _usual_xis(session, comp, away, home, usual, before=fixture.utc_kickoff)
     session.commit()
 
     predictor_no_lineup = predict.Predictor(session, as_of=fixture.utc_kickoff)
@@ -516,6 +533,9 @@ def test_predictor_use_lineup_strength_false_ignores_a_confirmed_lineup(session,
         session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
     session.commit()
 
+    _usual_xis(session, comp, home, away, list(range(1, 12)), before=fixture.utc_kickoff)
+    _usual_xis(session, comp, away, home, list(range(101, 112)), before=fixture.utc_kickoff)
+    session.commit()
     rated = {pid: 1500.0 for pid in [*range(1, 12), *range(101, 112)]}
     monkeypatch.setattr(
         predict.player_elo,
@@ -544,23 +564,62 @@ def test_live_predictor_uses_persisted_player_ratings(session):
     home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
     session.add_all([home, away])
     session.flush()
-    fixture = Match(competition_id=comp.id, utc_kickoff=dt.datetime.utcnow() + dt.timedelta(hours=1), status="scheduled", home_team_id=home.id, away_team_id=away.id, source="test")
+    kickoff = dt.datetime.utcnow() + dt.timedelta(hours=1)
+    fixture = Match(competition_id=comp.id, utc_kickoff=kickoff, status="scheduled", home_team_id=home.id, away_team_id=away.id, source="test")
     session.add(fixture)
     session.flush()
     for pid in range(1, 12):
         session.add(Lineup(match_id=fixture.id, team_id=home.id, player_name=f"H{pid}", starter=True, player_id=pid))
     for pid in range(101, 112):
         session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
+    # Both usually field average XIs; today home's is much stronger, away's much weaker.
+    _usual_xis(session, comp, home, away, list(range(201, 212)), before=kickoff)
+    _usual_xis(session, comp, away, home, list(range(301, 312)), before=kickoff)
     session.commit()
     ratings = {pid: 1800.0 for pid in range(1, 12)}
     ratings.update({pid: 1300.0 for pid in range(101, 112)})
+    ratings.update({pid: 1500.0 for pid in [*range(201, 212), *range(301, 312)]})
     player_elo.persist_player_ratings(session, ratings, {pid: 20 for pid in ratings})
 
     predictor = predict.Predictor(session)
     home_strength, away_strength, lineup_based = predictor._team_strength_for(fixture)
 
     assert lineup_based is True
-    assert home_strength > away_strength
+    assert home_strength > predictor.elo_ratings.get(home.id, elo.BASE_RATING)
+    assert away_strength < predictor.elo_ratings.get(away.id, elo.BASE_RATING)
+
+
+def test_usual_xi_leaves_team_elo_untouched(session):
+    """The fix for player Elo's narrower, unanchored scale: an ordinary
+    lineup must produce exactly the team-Elo strengths, not a player-
+    derived number that compresses every gap toward a coin flip."""
+    comp = Competition(slug="premier-league", name="EPL", country="England", type="league", fd_code="E0")
+    session.add(comp)
+    session.flush()
+    home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
+    session.add_all([home, away])
+    session.flush()
+    kickoff = dt.datetime.utcnow() + dt.timedelta(hours=1)
+    fixture = Match(competition_id=comp.id, utc_kickoff=kickoff, status="scheduled", home_team_id=home.id, away_team_id=away.id, source="test")
+    session.add(fixture)
+    session.flush()
+    for pid in range(1, 12):
+        session.add(Lineup(match_id=fixture.id, team_id=home.id, player_name=f"H{pid}", starter=True, player_id=pid))
+    for pid in range(101, 112):
+        session.add(Lineup(match_id=fixture.id, team_id=away.id, player_name=f"A{pid}", starter=True, player_id=pid))
+    _usual_xis(session, comp, home, away, list(range(1, 12)), before=kickoff)
+    _usual_xis(session, comp, away, home, list(range(101, 112)), before=kickoff)
+    session.commit()
+    ratings = {pid: 1700.0 for pid in range(1, 12)}
+    ratings.update({pid: 1350.0 for pid in range(101, 112)})
+    player_elo.persist_player_ratings(session, ratings, {pid: 20 for pid in ratings})
+
+    predictor = predict.Predictor(session)
+    home_strength, away_strength, lineup_based = predictor._team_strength_for(fixture)
+
+    assert lineup_based is True
+    assert home_strength == pytest.approx(predictor.elo_ratings.get(home.id, elo.BASE_RATING))
+    assert away_strength == pytest.approx(predictor.elo_ratings.get(away.id, elo.BASE_RATING))
 
 
 def test_generate_predictions_persists_lineup_based_flag(session):
